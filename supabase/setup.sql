@@ -149,16 +149,22 @@ create table if not exists public.members (
   team text,                                    -- the team a leader confirmed or changed
   gifts_override text[],                        -- a leader's correction to the top gifts
   first_sunday date,                            -- set by the team lead
-  pco_person_id text,                           -- their Planning Center People id, once synced
-  pco_synced_at timestamptz,
+  ext_system text,                              -- 'pco' or 'breeze' once sent to the church's people system
+  ext_person_id text,                           -- their id in that system
+  ext_synced_at timestamptz,
+  ext_state jsonb not null default '{}'::jsonb, -- what was last written there (decision noted, tags assigned)
   submitted_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 alter table public.members add column if not exists first_sunday date;
-alter table public.members add column if not exists pco_person_id text;
-alter table public.members add column if not exists pco_synced_at timestamptz;
-alter table public.members add column if not exists pco_noted text;  -- the decision already written as a note in Planning Center
+alter table public.members add column if not exists ext_system text;
+alter table public.members add column if not exists ext_person_id text;
+alter table public.members add column if not exists ext_synced_at timestamptz;
+alter table public.members add column if not exists ext_state jsonb not null default '{}'::jsonb;
+alter table public.members drop column if exists pco_person_id;
+alter table public.members drop column if exists pco_synced_at;
+alter table public.members drop column if exists pco_noted;
 create index if not exists members_church_idx on public.members(church_id, created_at desc);
 create index if not exists members_class_idx on public.members(class_id);
 
@@ -206,55 +212,64 @@ create table if not exists public.platform_admins (
   user_id uuid primary key references auth.users(id) on delete cascade
 );
 
--- ============ Planning Center ============
--- Tokens live only here. No security rule lets a browser read this table; only the server functions use it.
-create table if not exists public.pco_connections (
+-- ============ Connections to a church's people system (Planning Center or Breeze, one at a time) ============
+-- Early Planning-Center-only tables, renamed before launch
+drop table if exists public.pco_connections, public.pco_oauth_states, public.pco_team_map, public.pco_rosters, public.pco_queue, public.pco_sync_runs cascade;
+
+-- Credentials live only here. No security rule lets a browser read this table; only the server functions use it.
+create table if not exists public.connections (
   church_id uuid primary key references public.churches(id) on delete cascade,
-  access_token text not null,
-  refresh_token text not null,
-  expires_at timestamptz not null,
-  pco_org_id text,
-  pco_org_name text,
+  system text not null check (system in ('pco', 'breeze')),
+  access_token text,          -- Planning Center (OAuth)
+  refresh_token text,
+  expires_at timestamptz,
+  subdomain text,             -- Breeze: <subdomain>.breezechms.com
+  api_key text,               -- Breeze
+  org_name text,
+  ext_ids jsonb not null default '{}'::jsonb,   -- ids this app created there (tab and fields, or tag folder and tags)
   connected_by uuid references auth.users(id) on delete set null,
-  connected_at timestamptz not null default now(),
-  field_ids jsonb not null default '{}'::jsonb   -- the "Here To Serve" tab and field ids in their People, once created
+  connected_at timestamptz not null default now()
 );
 -- One-time codes that tie Planning Center's sign-in back to the church that started it
-create table if not exists public.pco_oauth_states (
+create table if not exists public.oauth_states (
   state text primary key default public.hts_new_token(),
   church_id uuid not null references public.churches(id) on delete cascade,
   user_id uuid not null references auth.users(id) on delete cascade,
   created_at timestamptz not null default now()
 );
--- Which Planning Center Services team counts as which Here To Serve team
-create table if not exists public.pco_team_map (
+-- Which outside team counts as which Here To Serve team. source: pco, breeze, or csv (a spreadsheet import)
+create table if not exists public.team_map (
   church_id uuid not null references public.churches(id) on delete cascade,
-  pco_team_id text not null,
-  pco_team_name text,
+  source text not null check (source in ('pco', 'breeze', 'csv')),
+  ext_team_id text not null,
+  ext_team_name text,
   hts_team text,
-  primary key (church_id, pco_team_id)
+  primary key (church_id, source, ext_team_id)
 );
--- Who is on each Planning Center team right now (refreshed by each pull)
-create table if not exists public.pco_rosters (
+-- Who is on each outside team right now (refreshed by each pull or import)
+create table if not exists public.rosters (
   church_id uuid not null references public.churches(id) on delete cascade,
-  pco_team_id text not null,
-  pco_person_id text not null,
+  source text not null check (source in ('pco', 'breeze', 'csv')),
+  ext_team_id text not null,
+  person_key text not null,   -- their id there, or an email/name for a spreadsheet
   name text,
+  member_id uuid references public.members(id) on delete set null,
   pulled_at timestamptz not null default now(),
-  primary key (church_id, pco_team_id, pco_person_id)
+  primary key (church_id, source, ext_team_id, person_key)
 );
--- People to push to Planning Center (filled by triggers, emptied by the sync function)
-create table if not exists public.pco_queue (
+-- People to send to the connected system (filled by triggers, emptied by the sync function)
+create table if not exists public.sync_queue (
   member_id uuid primary key references public.members(id) on delete cascade,
   church_id uuid not null references public.churches(id) on delete cascade,
   queued_at timestamptz not null default now(),
   tries int not null default 0,
   last_error text
 );
-create table if not exists public.pco_sync_runs (
+create table if not exists public.sync_runs (
   id bigint generated always as identity primary key,
   church_id uuid not null references public.churches(id) on delete cascade,
-  kind text not null check (kind in ('push', 'pull', 'connect')),
+  system text not null check (system in ('pco', 'breeze', 'csv')),
+  kind text not null check (kind in ('push', 'pull', 'connect', 'test', 'import')),
   started_at timestamptz not null default now(),
   finished_at timestamptz,
   ok boolean,
@@ -262,7 +277,7 @@ create table if not exists public.pco_sync_runs (
   pulled int not null default 0,
   error text
 );
-create index if not exists pco_runs_church_idx on public.pco_sync_runs(church_id, started_at desc);
+create index if not exists sync_runs_church_idx on public.sync_runs(church_id, started_at desc);
 
 -- ============ Phone app ============
 -- Push notification tokens for staff phones
@@ -336,12 +351,12 @@ alter table public.prayer_requests enable row level security;
 alter table public.notes enable row level security;
 alter table public.next_steps enable row level security;
 alter table public.platform_admins enable row level security;
-alter table public.pco_connections enable row level security;
-alter table public.pco_oauth_states enable row level security;
-alter table public.pco_team_map enable row level security;
-alter table public.pco_rosters enable row level security;
-alter table public.pco_queue enable row level security;
-alter table public.pco_sync_runs enable row level security;
+alter table public.connections enable row level security;
+alter table public.oauth_states enable row level security;
+alter table public.team_map enable row level security;
+alter table public.rosters enable row level security;
+alter table public.sync_queue enable row level security;
+alter table public.sync_runs enable row level security;
 alter table public.devices enable row level security;
 alter table public.notify_queue enable row level security;
 
@@ -349,7 +364,7 @@ alter table public.notify_queue enable row level security;
 do $$ declare r record; begin
   for r in select policyname, tablename from pg_policies where schemaname = 'public' and tablename in
     ('churches','staff','staff_invites','classes','class_leaders','members','prayer_requests','notes','next_steps','platform_admins',
-     'pco_connections','pco_oauth_states','pco_team_map','pco_rosters','pco_queue','pco_sync_runs','devices','notify_queue')
+     'connections','oauth_states','team_map','rosters','sync_queue','sync_runs','devices','notify_queue')
   loop execute format('drop policy %I on public.%I', r.policyname, r.tablename); end loop;
 end $$;
 
@@ -387,10 +402,10 @@ create policy "steps delete" on public.next_steps for delete to authenticated us
 
 create policy "platform admins self" on public.platform_admins for select to authenticated using (user_id = auth.uid());
 
--- Planning Center: no rules on pco_connections, pco_oauth_states or pco_queue, so browsers can never read them.
-create policy "core read team map" on public.pco_team_map for select to authenticated using (public.hts_is_core(church_id));
-create policy "core read rosters" on public.pco_rosters for select to authenticated using (public.hts_is_core(church_id));
-create policy "admins read sync runs" on public.pco_sync_runs for select to authenticated using (public.hts_has(church_id, array['admin']));
+-- Connections: no rules on connections, oauth_states or sync_queue, so browsers can never read them.
+create policy "core read team map" on public.team_map for select to authenticated using (public.hts_is_core(church_id));
+create policy "core read rosters" on public.rosters for select to authenticated using (public.hts_is_core(church_id));
+create policy "admins read sync runs" on public.sync_runs for select to authenticated using (public.hts_has(church_id, array['admin']));
 
 create policy "own devices" on public.devices for select to authenticated using (user_id = auth.uid());
 create policy "own devices delete" on public.devices for delete to authenticated using (user_id = auth.uid());
@@ -743,20 +758,26 @@ begin
 end $$;
 
 -- Gifts across the church: how many people have each gift in their top 3 (counts only, never names)
+-- Where "serving now" comes from: the connected system, or a spreadsheet import when nothing is connected
+create or replace function public.hts_roster_source(p_church uuid) returns text language sql stable security definer set search_path = public as $$
+  select coalesce((select system from public.connections where church_id = p_church), 'csv')
+$$;
+
 create or replace function public.hts_snapshot(p_church uuid) returns jsonb language sql stable security definer set search_path = public as $$
   select case when public.hts_is_core(p_church) then jsonb_build_object(
     'people', (select count(*) from public.members where church_id = p_church and status = 'submitted' and decision = 'joining'),
+    'source', public.hts_roster_source(p_church),
     'gifts', (select coalesce(jsonb_object_agg(g, n), '{}'::jsonb) from (
        select g, count(*) n from public.members m, unnest(coalesce(m.gifts_override, m.top_gifts)) g
        where m.church_id = p_church and m.status = 'submitted' and m.decision = 'joining' group by g) x),
     'teams', (select coalesce(jsonb_agg(jsonb_build_object(
        'name', t->>'name',
-       -- serving now: Planning Center's roster when connected and mapped, otherwise people placed on the team here
-       'serving', case when exists (select 1 from public.pco_team_map where church_id = p_church and hts_team = t->>'name')
-                  then (select count(distinct r.pco_person_id) from public.pco_rosters r join public.pco_team_map mp on mp.church_id = r.church_id and mp.pco_team_id = r.pco_team_id
-                        where r.church_id = p_church and mp.hts_team = t->>'name')
+       -- serving now: the roster from the connected system (or the last spreadsheet import) when mapped, otherwise people placed here
+       'serving', case when exists (select 1 from public.team_map where church_id = p_church and source = public.hts_roster_source(p_church) and hts_team = t->>'name')
+                  then (select count(distinct r.person_key) from public.rosters r join public.team_map mp on mp.church_id = r.church_id and mp.source = r.source and mp.ext_team_id = r.ext_team_id
+                        where r.church_id = p_church and r.source = public.hts_roster_source(p_church) and mp.hts_team = t->>'name')
                   else (select count(*) from public.members m where m.church_id = p_church and m.decision = 'joining' and coalesce(m.team, m.rec_teams[1]) = t->>'name' and m.first_sunday is not null) end,
-       'fromPco', exists (select 1 from public.pco_team_map where church_id = p_church and hts_team = t->>'name'),
+       'fromSource', exists (select 1 from public.team_map where church_id = p_church and source = public.hts_roster_source(p_church) and hts_team = t->>'name'),
        -- gifted but not placed: joined members whose top gifts fit this team and who aren't on any team yet
        'gifted', (select count(*) from public.members m where m.church_id = p_church and m.decision = 'joining' and m.first_sunday is null
                   and coalesce(m.gifts_override, m.top_gifts) && array(select jsonb_array_elements_text(t->'gifts')))
@@ -772,59 +793,190 @@ create or replace function public.hts_platform_stats() returns jsonb language sq
   end
 $$;
 
--- ============ Planning Center (the browser side; tokens are only ever touched by the server functions) ============
--- Start "Connect Planning Center": a one-time state code the callback function checks
-create or replace function public.hts_pco_begin(p_church uuid) returns text language plpgsql security definer set search_path = public as $$
-declare st text;
+-- ============ Connections (the browser side; credentials are only ever touched by the server functions) ============
+-- Start "Connect Planning Center": a one-time state code the callback function checks.
+-- A church connects one system at a time.
+create or replace function public.hts_connect_begin(p_church uuid) returns text language plpgsql security definer set search_path = public as $$
+declare st text; cur text;
 begin
-  if not public.hts_has(p_church, array['admin']) then raise exception 'Only Administrators can connect Planning Center'; end if;
-  delete from public.pco_oauth_states where created_at < now() - interval '1 hour';
-  insert into public.pco_oauth_states(church_id, user_id) values (p_church, auth.uid()) returning state into st;
+  if not public.hts_has(p_church, array['admin']) then raise exception 'Only Administrators can connect a people system'; end if;
+  select system into cur from public.connections where church_id = p_church;
+  if cur = 'breeze' then raise exception 'Breeze is connected. Disconnect it first; a church connects one system at a time.'; end if;
+  delete from public.oauth_states where created_at < now() - interval '1 hour';
+  insert into public.oauth_states(church_id, user_id) values (p_church, auth.uid()) returning state into st;
   return st;
 end $$;
 
--- What Settings shows: connected or not, the last few sync runs, the team map. Never the tokens.
-create or replace function public.hts_pco_status(p_church uuid) returns jsonb language sql stable security definer set search_path = public as $$
+-- What Settings shows: which system, the last few runs, the team map. Never credentials.
+create or replace function public.hts_conn_status(p_church uuid) returns jsonb language sql stable security definer set search_path = public as $$
   select case when public.hts_is_core(p_church) then jsonb_build_object(
-    'connected', exists (select 1 from public.pco_connections where church_id = p_church),
-    'orgName', (select pco_org_name from public.pco_connections where church_id = p_church),
-    'connectedAt', (select connected_at from public.pco_connections where church_id = p_church),
-    'queued', (select count(*) from public.pco_queue where church_id = p_church),
+    'connected', exists (select 1 from public.connections where church_id = p_church),
+    'system', (select system from public.connections where church_id = p_church),
+    'orgName', (select org_name from public.connections where church_id = p_church),
+    'connectedAt', (select connected_at from public.connections where church_id = p_church),
+    'source', public.hts_roster_source(p_church),
+    'queued', (select count(*) from public.sync_queue where church_id = p_church),
+    'csvImportedAt', (select max(pulled_at) from public.rosters where church_id = p_church and source = 'csv'),
     'runs', case when public.hts_has(p_church, array['admin']) then (select coalesce(jsonb_agg(r order by r.started_at desc), '[]'::jsonb) from
-              (select kind, started_at, finished_at, ok, pushed, pulled, error from public.pco_sync_runs where church_id = p_church order by started_at desc limit 8) r) else '[]'::jsonb end,
-    'map', (select coalesce(jsonb_agg(jsonb_build_object('pcoTeamId', pco_team_id, 'pcoTeamName', pco_team_name, 'htsTeam', hts_team) order by pco_team_name), '[]'::jsonb)
-            from public.pco_team_map where church_id = p_church)) end
+              (select system, kind, started_at, finished_at, ok, pushed, pulled, error from public.sync_runs where church_id = p_church order by started_at desc limit 8) r) else '[]'::jsonb end,
+    'map', (select coalesce(jsonb_agg(jsonb_build_object('source', source, 'extTeamId', ext_team_id, 'extTeamName', ext_team_name, 'htsTeam', hts_team,
+                    'people', (select count(*) from public.rosters r where r.church_id = tm.church_id and r.source = tm.source and r.ext_team_id = tm.ext_team_id)) order by ext_team_name), '[]'::jsonb)
+            from public.team_map tm where church_id = p_church and source = public.hts_roster_source(p_church))) end
 $$;
 
-create or replace function public.hts_pco_disconnect(p_church uuid) returns void language plpgsql security definer set search_path = public as $$
+create or replace function public.hts_disconnect(p_church uuid) returns void language plpgsql security definer set search_path = public as $$
+declare sys text;
 begin
-  if not public.hts_has(p_church, array['admin']) then raise exception 'Only Administrators can disconnect Planning Center'; end if;
-  delete from public.pco_connections where church_id = p_church;
-  delete from public.pco_queue where church_id = p_church;
-  delete from public.pco_rosters where church_id = p_church;
+  if not public.hts_has(p_church, array['admin']) then raise exception 'Only Administrators can disconnect'; end if;
+  select system into sys from public.connections where church_id = p_church;
+  delete from public.connections where church_id = p_church;
+  delete from public.sync_queue where church_id = p_church;
+  if sys is not null then
+    delete from public.rosters where church_id = p_church and source = sys;
+    insert into public.sync_runs(church_id, system, kind, ok, finished_at, error) values (p_church, sys, 'connect', true, now(), 'Disconnected');
+  end if;
 end $$;
 
-create or replace function public.hts_pco_set_map(p_church uuid, p_pco_team text, p_hts_team text) returns void language plpgsql security definer set search_path = public as $$
+-- Match an outside team (or a spreadsheet's team name) to a Here To Serve team
+create or replace function public.hts_set_map(p_church uuid, p_source text, p_ext_team text, p_hts_team text) returns void language plpgsql security definer set search_path = public as $$
 begin
-  if not public.hts_has(p_church, array['admin']) then raise exception 'Only Administrators can map teams'; end if;
+  if not public.hts_has(p_church, array['admin']) then raise exception 'Only Administrators can match teams'; end if;
   if p_hts_team is not null and p_hts_team <> '' then perform public.hts_clean_teams(p_church, array[p_hts_team]); end if;
-  update public.pco_team_map set hts_team = nullif(p_hts_team, '') where church_id = p_church and pco_team_id = p_pco_team;
-  if not found then raise exception 'That Planning Center team hasn''t been pulled yet'; end if;
+  update public.team_map set hts_team = nullif(p_hts_team, '') where church_id = p_church and source = p_source and ext_team_id = p_ext_team;
+  if not found then raise exception 'That team hasn''t been pulled or imported yet'; end if;
 end $$;
 
--- Queue a person for Planning Center when they submit, or when a leader changes their gifts or team
-create or replace function public.hts_queue_pco() returns trigger language plpgsql security definer set search_path = public as $$
+-- Queue a person for the connected system when they submit, or when a leader changes their gifts, team or first Sunday
+create or replace function public.hts_queue_sync() returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if new.status = 'submitted' and exists (select 1 from public.pco_connections where church_id = new.church_id)
+  if new.status = 'submitted' and exists (select 1 from public.connections where church_id = new.church_id)
      and (tg_op = 'INSERT' or old.status is distinct from new.status or old.team is distinct from new.team
-          or old.gifts_override is distinct from new.gifts_override or old.decision is distinct from new.decision) then
-    insert into public.pco_queue(member_id, church_id) values (new.id, new.church_id)
+          or old.gifts_override is distinct from new.gifts_override or old.decision is distinct from new.decision
+          or old.first_sunday is distinct from new.first_sunday) then
+    insert into public.sync_queue(member_id, church_id) values (new.id, new.church_id)
       on conflict (member_id) do update set queued_at = now(), tries = 0, last_error = null;
   end if;
   return new;
 end $$;
 drop trigger if exists hts_queue_pco on public.members;
-create trigger hts_queue_pco after insert or update on public.members for each row execute function public.hts_queue_pco();
+drop function if exists public.hts_queue_pco();
+drop trigger if exists hts_queue_sync on public.members;
+create trigger hts_queue_sync after insert or update on public.members for each row execute function public.hts_queue_sync();
+drop function if exists public.hts_pco_begin(uuid);
+drop function if exists public.hts_pco_status(uuid);
+drop function if exists public.hts_pco_disconnect(uuid);
+drop function if exists public.hts_pco_set_map(uuid, text, text);
+
+-- ============ Spreadsheets ============
+-- Export everyone (Administrator and Staff). Prayer requests and leader notes are never exported.
+-- Column names follow common church-software people imports (first_name, last_name, email, phone ...).
+create or replace function public.hts_export_people(p_church uuid, p_filter text default 'all', p_class uuid default null)
+returns table(first_name text, last_name text, email text, phone text, marital_status text, kids_at_home text, kids_ages text,
+  faith_in_jesus text, baptized text, in_a_group text, how_they_found_us text, membership_status text, membership_date date,
+  gift_1 text, gift_1_score int, gift_2 text, gift_2_score int, gift_3 text, gift_3_score int,
+  recommended_team text, assigned_team text, first_sunday date, can_serve text, how_often text, skills text, passions text,
+  class_name text, class_date date, open_next_steps text)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.hts_is_core(p_church) then raise exception 'Only Administrators and Staff can export'; end if;
+  if p_filter not in ('all', 'joined', 'not_ready', 'in_progress') then raise exception 'Unknown filter'; end if;
+  return query
+  with g as (select m.id, coalesce(m.gifts_override, m.top_gifts) as gifts, m.scores from public.members m where m.church_id = p_church)
+  select
+    split_part(trim(coalesce(m.name, '')), ' ', 1),
+    nullif(trim(substr(trim(coalesce(m.name, '')), length(split_part(trim(coalesce(m.name, '')), ' ', 1)) + 1)), ''),
+    m.email, m.phone, m.answers->>'married', m.answers->>'kids', m.answers->>'kidsAges',
+    m.answers->>'faith', m.answers->>'bapt', m.answers->>'group', m.answers->>'found',
+    case when m.status <> 'submitted' then 'In progress' when m.decision = 'joining' then 'Member' else 'Not ready yet' end,
+    m.submitted_at::date,
+    public.hts_gift_name(g.gifts[1]), (g.scores->>g.gifts[1])::int,
+    public.hts_gift_name(g.gifts[2]), (g.scores->>g.gifts[2])::int,
+    public.hts_gift_name(g.gifts[3]), (g.scores->>g.gifts[3])::int,
+    m.rec_teams[1], m.team, m.first_sunday, m.answers->>'when', m.answers->>'often',
+    (select string_agg(x, '; ') from jsonb_array_elements_text(case when jsonb_typeof(m.answers->'skills') = 'array' then m.answers->'skills' else '[]' end) x),
+    (select string_agg(x, '; ') from jsonb_array_elements_text(case when jsonb_typeof(m.answers->'passions') = 'array' then m.answers->'passions' else '[]' end) x),
+    k.name, k.class_date,
+    (select string_agg(s.title, '; ' order by s.due nulls last) from public.next_steps s where s.member_id = m.id and s.done_at is null)
+  from public.members m join g on g.id = m.id left join public.classes k on k.id = m.class_id
+  where m.church_id = p_church
+    and (p_class is null or m.class_id = p_class)
+    and (p_filter = 'all' or (p_filter = 'joined' and m.decision = 'joining') or (p_filter = 'not_ready' and m.decision = 'not_ready')
+         or (p_filter = 'in_progress' and m.status <> 'submitted'))
+  order by m.created_at;
+end $$;
+
+create or replace function public.hts_gift_name(g text) returns text language sql immutable set search_path = public as $$
+  select case g when 'sh' then 'Shepherding' when 'te' then 'Teaching' when 'me' then 'Mercy' when 'le' then 'Leadership'
+    when 'en' then 'Encouragement' when 'he' then 'Helps' when 'ad' then 'Administration' when 'fa' then 'Faith'
+    when 'ho' then 'Hospitality' when 'ev' then 'Evangelism' when 'gi' then 'Giving' end
+$$;
+
+create or replace function public.hts_export_steps(p_church uuid, p_open_only boolean default true)
+returns table(person text, email text, step text, owner text, due date, done_at timestamptz, created_at timestamptz)
+language plpgsql stable security definer set search_path = public as $$
+begin
+  if not public.hts_is_core(p_church) then raise exception 'Only Administrators and Staff can export'; end if;
+  return query
+  select m.name, m.email, s.title, coalesce((select coalesce(st.name, st.email) from public.staff st where st.church_id = s.church_id and st.user_id = s.owner_user), s.owner_label),
+         s.due, s.done_at, s.created_at
+  from public.next_steps s join public.members m on m.id = s.member_id
+  where s.church_id = p_church and (not p_open_only or s.done_at is null)
+  order by s.due nulls last, s.created_at;
+end $$;
+
+-- Import a spreadsheet of team rosters (Administrator). Rows: [{email, name, team}].
+-- p_teams optionally matches each team name to a Here To Serve team ({"Kids Check-in": "Kids", "Band": null});
+-- names not in p_teams are matched to a Here To Serve team with the same name, if there is one.
+-- With p_commit false it only reports what would happen (the preview); with true it replaces the last import.
+create or replace function public.hts_import_roster(p_church uuid, p_rows jsonb, p_teams jsonb default '{}', p_commit boolean default false)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare r jsonb; i int := 0; team text; em text; nm text; pkey text; mid uuid; hts text;
+  bad jsonb := '[]'; teams jsonb := '{}'; people jsonb := '{}'; matched int := 0; counted int := 0; seen text[] := '{}';
+  names text[];
+begin
+  if not public.hts_has(p_church, array['admin']) then raise exception 'Only Administrators can import'; end if;
+  if jsonb_typeof(p_rows) <> 'array' then raise exception 'Rows must be a list'; end if;
+  if jsonb_array_length(p_rows) > 5000 then raise exception 'That''s more than 5,000 rows. Split the file and import each part.'; end if;
+  select array_agg(x->>'name') into names from public.churches c, jsonb_array_elements(c.settings->'teams') x where c.id = p_church;
+  if p_commit then
+    delete from public.rosters where church_id = p_church and source = 'csv';
+    delete from public.team_map where church_id = p_church and source = 'csv';
+  end if;
+  for r in select * from jsonb_array_elements(p_rows) loop
+    i := i + 1;
+    team := nullif(left(trim(coalesce(r->>'team', '')), 80), '');
+    em := nullif(lower(trim(coalesce(r->>'email', ''))), '');
+    nm := nullif(left(trim(coalesce(r->>'name', '')), 120), '');
+    if team is null then bad := bad || jsonb_build_object('row', i, 'reason', 'No team'); continue; end if;
+    if em is null and nm is null then bad := bad || jsonb_build_object('row', i, 'reason', 'No email or name'); continue; end if;
+    if em is not null and em !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then bad := bad || jsonb_build_object('row', i, 'reason', 'Email doesn''t look right'); continue; end if;
+    pkey := coalesce(em, lower(nm));
+    if (lower(team) || '|' || pkey) = any(seen) then continue; end if;  -- the same person twice on one team counts once
+    seen := seen || (lower(team) || '|' || pkey);
+    -- Is this someone who took the class here? (by email, else exact name)
+    select id into mid from public.members where church_id = p_church and ((em is not null and email = em) or (em is null and lower(name) = lower(nm))) limit 1;
+    if mid is not null then matched := matched + 1; end if;
+    if not teams ? team then
+      hts := case when p_teams ? team then nullif(p_teams->>team, '') else (select n from unnest(names) n where lower(n) = lower(team) limit 1) end;
+      if hts is not null and not hts = any(names) then raise exception 'There''s no % team on your list', hts; end if;
+      teams := teams || jsonb_build_object(team, jsonb_build_object('htsTeam', hts, 'people', 0));
+      if p_commit then insert into public.team_map(church_id, source, ext_team_id, ext_team_name, hts_team) values (p_church, 'csv', lower(team), team, hts); end if;
+    end if;
+    teams := jsonb_set(teams, array[team, 'people'], to_jsonb((teams->team->>'people')::int + 1));
+    if teams->team->>'htsTeam' is not null then counted := counted + 1; end if;
+    if p_commit then
+      insert into public.rosters(church_id, source, ext_team_id, person_key, name, member_id) values (p_church, 'csv', lower(team), pkey, coalesce(nm, em), mid)
+        on conflict do nothing;
+    end if;
+  end loop;
+  if p_commit then
+    insert into public.sync_runs(church_id, system, kind, ok, finished_at, pulled, error)
+      values (p_church, 'csv', 'import', true, now(), counted, case when jsonb_array_length(bad) > 0 then jsonb_array_length(bad) || ' rows skipped' end);
+  end if;
+  return jsonb_build_object('rows', i, 'counted', counted, 'matchedPeople', matched, 'teams', teams,
+    'unmatchedTeams', (select coalesce(jsonb_agg(k), '[]') from jsonb_each(teams) t(k, v) where v->>'htsTeam' is null),
+    'skipped', bad, 'saved', p_commit);
+end $$;
 
 -- ============ Staff phone notifications ============
 create or replace function public.hts_queue_notify() returns trigger language plpgsql security definer set search_path = public as $$

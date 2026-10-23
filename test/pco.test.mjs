@@ -70,10 +70,10 @@ ok(fieldValues({ ...member, gifts_override: ["le"], team: "Security" })[FIELDS.t
   const r1 = await pushMember(c, ids, member, commitments);
   ok(fake.db.people.length === 1 && fake.db.emails[0].attributes.address === "Daniel@B.com" && fake.db.phones.length === 1, "a new person is created with email and phone");
   ok(fake.db.data.length === 3 && fake.db.notes.length === 1 && /joined on 2026-10-23.*Faith, Serve/.test(fake.db.notes[0].note), "fields filled (blank first Sunday skipped) and a note with the decision and commitments");
-  const r2 = await pushMember(c, ids, { ...member, pco_person_id: r1.personId, first_sunday: "2026-11-01" }, commitments, { noteAlreadySent: true });
+  const r2 = await pushMember(c, ids, { ...member, ext_system: "pco", ext_person_id: r1.personId, first_sunday: "2026-11-01" }, commitments, r1.state);
   ok(fake.db.people.length === 1 && fake.db.data.length === 4 && fake.db.notes.length === 1 && r2.personId === r1.personId, "pushing again updates in place: no duplicate person, field or note");
-  const r3 = await pushMember(c, ids, { ...member, pco_person_id: null }, commitments, { noteAlreadySent: true });
-  ok(r3.personId === r1.personId, "matched by email when we don't have their id yet");
+  const r3 = await pushMember(c, ids, { ...member, ext_person_id: null }, commitments, {});
+  ok(r3.personId === r1.personId && r1.state.noted === "joining", "matched by email when we don't have their id yet");
   ok(await findPerson(c, { name: "Daniel Brooks", phone: "555.123.4567" }) === r1.personId, "matched by name + phone when there's no email");
   ok(await findPerson(c, { name: "Daniel Brooks", phone: "999-999-9999" }) === null, "same name, different phone: not the same person");
 }

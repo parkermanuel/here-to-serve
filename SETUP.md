@@ -2,7 +2,7 @@
 
 ## Status (23 Oct 2026)
 Done: domain heretoserve.app bought; Supabase project `here-to-serve` (Pro org, Micro, East US Ohio) created; its URL and public key are in `config.json`; the code, database file, server functions, phone app projects and workflows are written and tested.
-Still to do: the steps below, in order. Steps 1–5 put the website and Pinewood pilot online (about an hour). Step 6 turns on Planning Center. Step 7 is the App Store. After this, every change Claude makes goes live on its own when it's merged.
+Still to do: the steps below, in order. Steps 1–5 put the website and Pinewood pilot online (about an hour). Step 6 turns on Planning Center; a church on Breeze uses step 6b instead (a church connects one system at a time). Spreadsheets need no setup. Step 7 is the App Store. After this, every change Claude makes goes live on its own when it's merged.
 
 ## 1. Code (GitHub)
 1. Create a new **public** repo named **here-to-serve** under your account (empty: no README). GitHub Pages on a free account needs a public repo. Everything in it already ships to every visitor's browser, so public exposes nothing new. No secrets live in the code.
@@ -24,7 +24,7 @@ Repo **Settings**, then **Secrets and variables**, then **Actions**. Add these. 
 | Secret | `SUPABASE_ACCESS_TOKEN` | supabase.com: **Account**, **Access Tokens**, **Generate** | Server functions deploy |
 | Variable | `SUPABASE_PROJECT_REF` | `lfeypyanuqagvuuqothd` | Server functions and the 15-minute job |
 | Variable | `SITE_URL` | `https://heretoserve.app` | Links in redirects |
-| Secret | `CRON_SECRET` | Make one up: 40+ random letters and numbers | The 15-minute Planning Center sync and staff notifications |
+| Secret | `CRON_SECRET` | Make one up: 40+ random letters and numbers | The 15-minute Planning Center / Breeze sync and staff notifications |
 
 ## 4. Point the domain (Namecheap)
 **Domain List**, heretoserve.app, **Advanced DNS**. Delete the parking records and add:
@@ -62,6 +62,19 @@ One-time, about 15 minutes. After this, any church's Administrator connects thei
 6. In Here To Serve: **Settings**, **Connect Planning Center**, approve. Then **Sync now**, and match each Services team to a Here To Serve team. Unmatched teams are ignored.
 
 What it does: every 15 minutes, people who finished class (or whose gifts or team a leader changed) go to Planning Center People. It finds them by email first, then name and phone, before creating anyone new. It fills a **Here To Serve** tab (Top gifts, Team, Membership, First Sunday) and adds one note with their decision and commitment date. Services teams and their people come back, so the snapshot's "serving now" is real. It paces itself under Planning Center's limit (about 100 requests per 20 seconds) and waits when asked to. **Settings** shows each run and any errors.
+
+## 6b. Breeze (for a church on Breeze instead of Planning Center)
+No app registration needed; each church uses its own key.
+1. In Breeze, a Breeze **administrator** opens **Extensions** (top menu, or the gear), then **API**, and copies the **API key**. (Wording may differ slightly by account; it's the page that shows "API Key".) Anyone with this key can read and change the church's Breeze data, so it's typed into Here To Serve once and never shown again.
+2. In Here To Serve: **Settings**, **Connect Breeze**, enter the first part of the Breeze address (for `pinewood.breezechms.com`, enter `pinewood`) and the key, then **Test and connect**.
+3. **Sync now**, then match each Breeze tag to a Here To Serve team. Unmatched tags are ignored.
+4. Claude: confirm the items marked **CONFIRM** in `supabase/functions/_shared/breeze-constants.js` with one test call on a real Breeze account (the account-name and notes routes, the custom field format, and the rate limit). If the notes route doesn't exist, syncing still works; Settings shows that the note didn't save.
+
+What it does: like Planning Center. People go to Breeze every 15 minutes (found by email, then name and phone, else created). Gifts, team and membership become tags in a **Here To Serve** tag folder, plus one note with their decision. Breeze tags come back as team rosters. It goes slowly (about 20 requests a minute, 10 people per run) so it never trips Breeze's limit. **Test connection** in Settings checks the key any time.
+
+## Spreadsheets (any church, no setup)
+- **Export** (Administrator and Staff): **People**, then **Export to a spreadsheet**. Pick who (everyone, joined, not ready, in progress) and a class, then **Download people (CSV)** or **Download open next steps (CSV)**. Columns use plain names most church software imports (first_name, last_name, email, phone, membership_status, gifts, team…). Prayer requests and notes are never included. In the phone app it opens the share sheet (Save to Files, Mail).
+- **Import team rosters** (Administrator): **Settings**, **Import team rosters**. A CSV with an Email or Name column (or First/Last name) and a Team column, one row per person per team. **Preview** shows each team in the file, how many people took the class here, and skipped rows with the reason; match each team, then **Save**. A new import replaces the last one. If Planning Center or Breeze is connected, its teams are what's counted; the import is kept for if you disconnect.
 
 ## 7. Phone app (App Store)
 White label in the store means one app named **Here To Serve**. Anyone can download it; the church's name, logo and color load once they scan their class code or a staff member signs in.
@@ -101,8 +114,8 @@ The app is the same code as the website, wrapped with Capacitor, plus phone feat
 The Android project is in `android/`. To publish: a Google Play developer account ($25 once), then build with Android Studio. Push notifications on Android also need a free Firebase project (`google-services.json`); until then the app hides the notifications button on Android.
 
 ## Who sees what
-- **Administrator**: everything for their church, including settings, Planning Center and the team.
-- **Staff**: every person's card, notes, gift and team edits, next steps, classes, snapshot. No settings or team changes.
+- **Administrator**: everything for their church, including settings, connections (Planning Center or Breeze), roster import and the team.
+- **Staff**: every person's card, notes, gift and team edits, next steps, classes, snapshot, spreadsheet export, Sync now and Test connection. No settings or team changes.
 - **Team Lead**: their own team(s) only: name, contact, top gifts and availability of people headed there; first Sundays; steps assigned to them. During a class they're added to (while it's open), they can see that class's people and add notes or adjust gifts and team.
 - **Prayer requests**: only people with prayer access.
-- **Planning Center tokens**: no one. Only the server functions read them.
+- **Planning Center tokens and the Breeze API key**: no one. Only the server functions read them.

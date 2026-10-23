@@ -15,8 +15,9 @@ export function privacyPage() {
     <p>You must be 18 or older to take a class with Here To Serve.</p></section>
   <section class="panel"><h2>Who sees it</h2>
     <p><b>Administrators and Staff</b> at your church see your answers, gifts, notes and next steps. <b>Team Leads</b> see only people headed to their own team (name, contact, top gifts and when you can serve), plus, if they're helping with your class's one-on-ones, your card while that class is open. <b>Prayer requests</b> are seen only by people your church gives prayer access to. The church-wide snapshot shows counts, never names.</p></section>
-  <section class="panel"><h2>Planning Center</h2>
-    <p>If your church connects its Planning Center account, Here To Serve sends your name, email, phone, top gifts, team, membership status, first Sunday and a short note about your decision to your church's Planning Center People, and reads its Services team lists to show who's serving. Planning Center's own privacy policy then applies to the copy in Planning Center. Your church can disconnect at any time.</p></section>
+  <section class="panel"><h2>Church software and spreadsheets</h2>
+    <p>If your church connects its Planning Center or Breeze account (one at a time), Here To Serve sends your name, email, phone, top gifts, team, membership status, first Sunday and a short note about your decision to your church's account there, and reads its team lists to show who's serving. That company's own privacy policy then applies to the copy it holds. Your church can disconnect at any time.</p>
+    <p>Your church's Administrators and Staff can also download a spreadsheet of the same details, plus your class answers, to keep in their own records. Prayer requests and leader notes are never included in these.</p></section>
   <section class="panel"><h2>Where it's kept</h2>
     <p>On Supabase (database and sign-in) in the United States. Each church's information is walled off from every other church's. Sign-in emails and, later, other emails are sent through an email provider. Phone notifications go through Apple's or Google's notification service and never include anyone's name.</p></section>
   <section class="panel"><h2>Your choices</h2>

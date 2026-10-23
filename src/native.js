@@ -39,3 +39,16 @@ export async function onAppLink(handler) {
   if (!NATIVE) return;
   await App.addListener("appUrlOpen", (e) => { try { handler(new URL(e.url)); } catch {} });
 }
+
+// Save a spreadsheet: a download on the web; the share sheet in the phone app (Save to Files, Mail, AirDrop…)
+export async function saveFile(name, text, type = "text/csv") {
+  const blob = new Blob([text], { type: `${type};charset=utf-8` });
+  if (NATIVE && typeof File !== "undefined" && navigator.canShare) {
+    const file = new File([blob], name, { type });
+    if (navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: name }); return "shared"; } catch (e) { if (e?.name === "AbortError") return "cancelled"; } }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  return "downloaded";
+}

@@ -5,6 +5,7 @@ import { results, countGifts } from "./engine.js";
 import * as L from "./live.js";
 import * as N from "./native.js";
 import { privacyPage, termsPage } from "./pages.js";
+import { parseCsv, toCsv, rosterRows, PEOPLE_COLUMNS, STEP_COLUMNS, fileName } from "./csv.js";
 
 // ---------------- utilities ----------------
 const $ = (s, el = document) => el.querySelector(s);
@@ -221,7 +222,7 @@ async function doSubmit(decision) {
 // Three levels: Administrator (everything), Staff (no settings or team management), Team Lead (their own teams,
 // steps assigned to them, and interview mode for a class they're helping with). The database enforces all of this;
 // these screens just don't offer what someone can't do.
-const V = { filter: "all", inviteLink: null, signinSent: null, snapOpen: false, pcoMsg: null };
+const V = { filter: "all", inviteLink: null, signinSent: null, snapOpen: false, connMsg: null, connForm: null, exportFilter: "all", exportClass: "", imp: null };
 const P = () => L.state;
 const memberById = (id) => P().members.find((m) => m.id === id);
 const giftsOf = (m) => (m.gifts_override?.length ? m.gifts_override : m.top_gifts || []);
@@ -322,7 +323,7 @@ function snapshotPanel() {
     <span class="grow" style="display:flex;flex-direction:column;gap:2px"><span style="font-size:20px;font-weight:800">Church snapshot</span><span class="small" style="font-weight:500">${esc(summary)}</span></span><span aria-hidden="true">${V.snapOpen ? "▲" : "▼"}</span></button>
     ${V.snapOpen ? `<p class="hint">${s.people} members who've taken the assessment. Each person counts once for each of their top 3 gifts. Counts only, never names.</p>
       <div class="cols"><div class="panel" style="border:none;padding:0"><h2 style="font-size:16px">Gifts across the church</h2>${ranked.map((g) => `<div class="giftbar"><span>${GIFTS[g]}</span><span class="bar"><span style="width:${Math.round(((s.gifts[g] || 0) / max) * 100)}%"></span></span><b>${s.gifts[g] || 0}</b></div>`).join("")}</div>
-      <div class="panel" style="border:none;padding:0"><h2 style="font-size:16px">Teams</h2>${(s.teams || []).map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.name)}</b><span class="small">${t.serving} serving now${t.fromPco ? " (Planning Center)" : ""} · ${t.gifted} gifted members not placed yet</span></div></div>`).join("")}</div></div>` : ""}</section>`;
+      <div class="panel" style="border:none;padding:0"><h2 style="font-size:16px">Teams</h2>${(s.teams || []).map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.name)}</b><span class="small">${t.serving} serving now${t.fromSource ? ` (${esc(L.SYSTEMS[s.source] || "")})` : ""} · ${t.gifted} gifted members not placed yet</span></div></div>`).join("")}</div></div>` : ""}</section>`;
 }
 
 function viewHome() {
@@ -345,7 +346,17 @@ function viewPeople() {
   return `<div class="row"><h1 class="grow">People</h1><div class="filters">${[["all", "All"], ["joined", "Joined"], ["notready", "Not ready"], ["progress", "In progress"]].map(([k, l]) => `<button class="pillbtn" aria-pressed="${f === k}" data-act="filter" data-v="${k}">${l}</button>`).join("")}</div></div>
     <section class="panel"><div class="tablewrap"><table><thead><tr><th>Name</th><th>Top gifts</th><th>Team</th><th>Can serve</th><th>Status</th></tr></thead><tbody>
     ${list.map((m) => { const [st, cls] = statusOf(m); return `<tr><td><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "No name yet")}</button></td><td>${esc(giftsOf(m).map((g) => GIFTS[g]).join(", "))}</td><td>${esc(teamOf(m))}</td><td style="color:var(--quiet)">${esc(m.answers?.when || "")}</td><td><span class="${cls}">${st}</span></td></tr>`; }).join("") || `<tr><td colspan="5" style="color:var(--quiet)">No one here yet.</td></tr>`}
-    </tbody></table></div></section>`;
+    </tbody></table></div></section>
+    ${exportPanel()}`;
+}
+
+// Spreadsheet export: Administrators and Staff. Opens in Excel, Google Sheets, Numbers, and imports into most church software.
+function exportPanel() {
+  if (!L.isCore()) return "";
+  return `<section class="panel"><h2>Export to a spreadsheet</h2><p class="hint">A CSV file that opens in Excel, Google Sheets or Numbers, with columns most church software can import (first name, last name, email, phone, membership status, gifts, team). Prayer requests and one-on-one notes are never included.</p>
+    <div class="inline"><select class="in" data-act-change="export-filter" aria-label="Who to export">${[["all", "Everyone"], ["joined", "Joined"], ["not_ready", "Not ready yet"], ["in_progress", "In progress"]].map(([k, l]) => `<option value="${k}" ${V.exportFilter === k ? "selected" : ""}>${l}</option>`).join("")}</select>
+      <select class="in" data-act-change="export-class" aria-label="Class"><option value="">All classes</option>${P().classes.map((k) => `<option value="${k.id}" ${V.exportClass === k.id ? "selected" : ""}>${esc(k.name)}</option>`).join("")}</select></div>
+    <div class="row"><button class="btn" data-act="export-people">Download people (CSV)</button><button class="btn ghost" data-act="export-steps">Download open next steps (CSV)</button></div></section>`;
 }
 
 function viewPerson() {
@@ -363,7 +374,7 @@ function viewPerson() {
   const commList = L.active().settings?.commitments || [];
   const notes = P().notes[m.id] || [];
   const back = core ? `<button class="btn quiet" data-act="nav" data-to="people">← People</button>` : `<button class="btn quiet" data-act="class" data-id="${m.class_id}">← Class</button>`;
-  return `<div class="row">${back}<h1 class="grow">${esc(m.name || "No name yet")}</h1><span class="${cls}">${st}</span>${m.pco_person_id ? `<span class="pill ok">In Planning Center</span>` : ""}</div>
+  return `<div class="row">${back}<h1 class="grow">${esc(m.name || "No name yet")}</h1><span class="${cls}">${st}</span>${m.ext_person_id ? `<span class="pill ok">In ${esc(L.SYSTEMS[m.ext_system] || "")}</span>` : ""}</div>
   <div class="cols">
     <section class="panel"><h2>Gifts</h2>
       ${m.scores ? ranked.map((g) => `<div class="giftbar"><span>${GIFTS[g]}${gifts.includes(g) ? " ★" : ""}</span><span class="bar"><span style="width:${Math.round(((scores[g] || 0) / 6) * 100)}%"></span></span><b>${scores[g] || 0} of 6</b></div>`).join("") : `<p class="sub">Gifts show once they finish Part 2.</p>`}
@@ -440,17 +451,66 @@ function teamChecks(name, chosen = []) {
   return `<div class="chips">${teamNames().map((t) => `<label class="chip" style="display:flex;gap:6px;align-items:center"><input type="checkbox" name="${name}" value="${esc(t)}" ${chosen.includes(t) ? "checked" : ""}>${esc(t)}</label>`).join("")}</div>`;
 }
 
-function pcoPanel() {
-  const p = P().pco;
-  const msg = V.pcoMsg ? `<div class="${/connected/.test(V.pcoMsg) ? "note" : "err"}">${esc(V.pcoMsg)}</div>` : "";
-  if (!L.pcoReady()) return `<section class="panel"><h2>Planning Center</h2>${msg}<p class="hint">Not available yet: the Planning Center app hasn't been registered for Here To Serve. (One-time setup; see SETUP.md.)</p></section>`;
-  if (!p?.connected) return `<section class="panel"><h2>Planning Center</h2>${msg}<p class="hint">Connect once and new members, their gifts, team and membership go into Planning Center People automatically. Your Services teams come back so the snapshot shows who's really serving.</p><button class="btn" style="align-self:flex-start" data-act="pco-connect">Connect Planning Center</button></section>`;
+// Connections: one people system at a time (Planning Center or Breeze), or a spreadsheet roster import.
+const when = (d) => `${fmt(d)} ${new Date(d).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+function runLabel(r) {
+  if (r.kind === "push") return `Sent ${r.pushed} ${r.pushed === 1 ? "person" : "people"}`;
+  if (r.kind === "pull") return `Pulled ${r.pulled} team members`;
+  if (r.kind === "import") return `Imported a spreadsheet: ${r.pulled} on matched teams`;
+  if (r.kind === "test") return "Tested the connection";
+  return "Connected";
+}
+function mapRows(map, source) {
+  return map.map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.extTeamName || t.extTeamId)}</b><span class="small">${t.people} ${t.people === 1 ? "person" : "people"}</span></div><select class="in" style="width:auto" data-act-change="team-map" data-source="${esc(source)}" data-id="${esc(t.extTeamId)}" aria-label="Here To Serve team for ${esc(t.extTeamName || "")}"><option value="">Not counted</option>${teamNames().map((n) => `<option ${t.htsTeam === n ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>`).join("");
+}
+function connPanel() {
+  const p = P().conn || {};
+  const msg = V.connMsg ? `<div class="${V.connMsg.ok ? "note" : "err"}">${esc(V.connMsg.text)}</div>` : "";
   const runs = p.runs || [];
-  return `<section class="panel"><h2>Planning Center</h2>${msg}<p class="hint">Connected${p.orgName ? ` to ${esc(p.orgName)}` : ""} on ${fmt(p.connectedAt)}. Syncs every 15 minutes. ${p.queued ? `${p.queued} waiting to send.` : ""}</p>
-    <div class="row"><button class="btn" data-act="pco-sync">Sync now</button><button class="btn quiet" data-act="pco-disconnect">Disconnect</button></div>
-    <h2 style="font-size:16px">Match your Services teams</h2><p class="hint">Pick which Here To Serve team each Planning Center team counts as. Unmatched teams are ignored.</p>
-    ${(p.map || []).map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.pcoTeamName || t.pcoTeamId)}</b></div><select class="in" style="width:auto" data-act-change="pco-map" data-id="${esc(t.pcoTeamId)}" aria-label="Here To Serve team for ${esc(t.pcoTeamName || "")}"><option value="">Not counted</option>${teamNames().map((n) => `<option ${t.htsTeam === n ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>`).join("") || `<p class="sub">Teams show here after the first sync.</p>`}
-    <h2 style="font-size:16px">Recent syncs</h2>${runs.map((r) => `<div class="taskrow"><div class="t"><b>${esc(r.kind === "push" ? `Sent ${r.pushed} ${r.pushed === 1 ? "person" : "people"}` : r.kind === "pull" ? `Pulled ${r.pulled} team members` : "Connected")}</b><span class="small">${fmt(r.started_at)} ${new Date(r.started_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}${r.error ? ` · ${esc(r.error)}` : ""}</span></div><span class="${r.ok ? "pill ok" : r.ok === false ? "pill late" : "pill"}">${r.ok ? "OK" : r.ok === false ? "Problem" : "Running"}</span></div>`).join("") || `<p class="sub">No syncs yet.</p>`}</section>`;
+  const runList = runs.length ? `<h2 style="font-size:16px">Recent activity</h2>${runs.map((r) => `<div class="taskrow"><div class="t"><b>${esc(runLabel(r))}</b><span class="small">${esc(L.SYSTEMS[r.system] || "")} · ${when(r.started_at)}${r.error ? ` · ${esc(r.error)}` : ""}</span></div><span class="${r.ok ? "pill ok" : r.ok === false ? "pill late" : "pill"}">${r.ok ? "OK" : r.ok === false ? "Problem" : "Running"}</span></div>`).join("")}` : "";
+  if (p.connected) {
+    const name = L.SYSTEMS[p.system];
+    const what = p.system === "breeze" ? "tags" : "Services teams";
+    return `<section class="panel" id="connections"><h2>Connected: ${esc(name)}</h2>${msg}<p class="hint">Connected${p.orgName ? ` to <b>${esc(p.orgName)}</b>` : ""} on ${fmt(p.connectedAt)}. New members, their gifts, team and membership go into ${esc(name)} every 15 minutes. ${p.queued ? `${p.queued} waiting to send.` : ""} A church connects one system at a time.</p>
+      <div class="row"><button class="btn" data-act="conn-sync">Sync now</button><button class="btn ghost" data-act="conn-test">Test connection</button><button class="btn quiet" data-act="conn-disconnect">Disconnect</button></div>
+      <h2 style="font-size:16px">Match your ${what}</h2><p class="hint">Pick which Here To Serve team each one counts as, so the snapshot shows who's really serving. Unmatched ones are ignored.</p>
+      ${mapRows(p.map || [], p.system) || `<p class="sub">These show here after the first sync.</p>`}
+      ${runList}</section>`;
+  }
+  const breeze = V.connForm === "breeze"
+    ? `<form data-form="breeze" class="q"><label class="fl" for="bz-sub">Your Breeze address</label><div class="inline" style="align-items:center"><span class="small">https://</span><input class="in" id="bz-sub" name="sub" placeholder="yourchurch" required maxlength="63" autocomplete="off" autocapitalize="none" spellcheck="false"><span class="small">.breezechms.com</span></div>
+        <label class="fl" for="bz-key">API key</label><input class="in" id="bz-key" name="key" type="password" required maxlength="200" autocomplete="off" spellcheck="false">
+        <p class="hint">In Breeze, an administrator opens <b>Extensions</b>, then <b>API</b>, and copies the key. It's stored on our server only and never shown again.</p>
+        <div class="row"><button class="btn" type="submit">Test and connect</button><button class="btn quiet" type="button" data-act="conn-form" data-v="">Cancel</button></div></form>`
+    : "";
+  const csvMap = p.source === "csv" && (p.map || []).length
+    ? `<h2 style="font-size:16px">Spreadsheet rosters in use</h2><p class="hint">Imported ${p.csvImportedAt ? fmt(p.csvImportedAt) : ""}. Change a match here, or import a new file to replace them.</p>${mapRows(p.map, "csv")}` : "";
+  return `<section class="panel" id="connections"><h2>Connect your people system</h2>${msg}<p class="hint">Connect one and new members, their gifts, team and membership go into it automatically, and your teams come back so the snapshot shows who's really serving. No people system? Import team rosters from a spreadsheet below.</p>
+    <div class="row">${L.pcoReady() ? `<button class="btn" data-act="conn-pco">Connect Planning Center</button>` : `<span class="small">Planning Center: not available yet (one-time app setup; see SETUP.md).</span>`}
+      ${V.connForm === "breeze" ? "" : `<button class="btn ghost" data-act="conn-form" data-v="breeze">Connect Breeze</button>`}</div>
+    ${breeze}${csvMap}${runList}</section>`;
+}
+
+// Roster import from a spreadsheet: Administrators only. Preview, match teams, then save.
+function importPanel() {
+  const p = P().conn || {};
+  const im = V.imp;
+  const note = p.connected ? `<p class="hint">You're connected to ${esc(L.SYSTEMS[p.system])}, so its teams are what the snapshot counts. An import is kept and used if you disconnect.</p>` : "";
+  let body = `<form data-form="roster-file" class="q"><label class="fl" for="imp-file">Spreadsheet (CSV)</label><input class="in" id="imp-file" name="file" type="file" accept=".csv,.txt,text/csv" required>
+    <button class="btn" type="submit" style="align-self:flex-start">Preview</button></form>`;
+  if (im?.error) body = `<div class="err">${esc(im.error)}</div>` + body;
+  if (im?.preview) {
+    const pv = im.preview;
+    const teams = Object.entries(pv.teams || {});
+    body = `<p class="hint"><b>${esc(im.file)}</b>: ${pv.rows} rows, ${teams.length} teams. ${pv.matchedPeople} ${pv.matchedPeople === 1 ? "person has" : "people have"} taken the class here. ${pv.counted} will count as serving.</p>
+      <div class="tablewrap"><table><thead><tr><th>Team in the file</th><th>People</th><th>Counts as</th></tr></thead><tbody>
+      ${teams.map(([label, t]) => `<tr><td><b>${esc(label)}</b></td><td>${t.people}</td><td><select class="in" style="width:auto" data-act-change="imp-map" data-id="${esc(label)}" aria-label="Here To Serve team for ${esc(label)}"><option value="">Not counted</option>${teamNames().map((n) => `<option ${t.htsTeam === n ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>
+      ${pv.unmatchedTeams?.length ? `<p class="hint">Not matched yet: ${esc(pv.unmatchedTeams.join(", "))}. Pick a team above, or leave them out.</p>` : ""}
+      ${pv.skipped?.length ? `<details><summary class="small">${pv.skipped.length} ${pv.skipped.length === 1 ? "row" : "rows"} skipped</summary><ul class="small">${pv.skipped.slice(0, 50).map((x) => `<li>Row ${x.row + 1}: ${esc(x.reason)}</li>`).join("")}${pv.skipped.length > 50 ? `<li>…and ${pv.skipped.length - 50} more</li>` : ""}</ul></details>` : ""}
+      <div class="row"><button class="btn" data-act="imp-save">Save these rosters</button><button class="btn quiet" data-act="imp-cancel">Cancel</button></div>
+      <p class="fine">Saving replaces the last spreadsheet import.</p>`;
+  }
+  return `<section class="panel" id="import"><h2>Import team rosters</h2><p class="hint">A spreadsheet with one row per person per team: an <b>Email</b> or <b>Name</b> column (or First and Last name), and a <b>Team</b> column. Export it from any church software, or type it in Excel or Google Sheets and save as CSV.</p>${note}${body}</section>`;
 }
 
 function viewSettings() {
@@ -480,7 +540,8 @@ function viewSettings() {
       <button class="btn" type="submit" style="align-self:flex-start">Create invite</button></form>
     ${V.inviteLink ? `<div class="q"><span class="fl">Send them this link</span><div class="code">${esc(V.inviteLink)}</div><button class="btn ghost" style="align-self:flex-start" data-act="copy" data-v="${esc(V.inviteLink)}">Copy invite link</button></div>` : ""}
     ${P().invites.length ? `<p class="hint">Waiting to accept: ${esc(P().invites.map((i) => `${i.email} (${ROLE_NAMES[i.role]})`).join(", "))}</p>` : ""}</section>
-  ${pcoPanel()}
+  ${connPanel()}
+  ${importPanel()}
   <section class="panel"><h2>Teams and commitments</h2><p class="hint">Your teams, the gifts that point to each, and the commitments people make. Editing these comes in the next update.</p>
     ${(s.teams || []).map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.name)}</b><span class="small">${esc((t.gifts || []).map((g) => GIFTS[g]).join(", "))}${t.check ? " · background check" : ""}</span></div></div>`).join("")}
     <p class="hint">${esc((s.commitments || []).map((x) => x.word).join(" · "))}</p></section>`;
@@ -522,9 +583,38 @@ document.addEventListener("click", async (e) => {
     if (act === "delete-member") { if (!confirmIt("Delete everything this person entered, plus their notes and steps? This can't be undone.")) return; await L.deleteMember(el.dataset.id); return go("#/s/people"); }
     if (act === "delete-account") { if (!confirmIt("Delete your account? This can't be undone.")) return; await L.deleteMyAccount(); toast("Your account was deleted"); return go("#/"); }
     if (act === "pinewood-beliefs") { const t = $('textarea[name="beliefs"]'); if (t) t.value = PINEWOOD_BELIEFS.map((b) => [b.word, b.text, b.verse].join(" | ")).join("\n"); return; }
-    if (act === "pco-connect") { const url = await L.pcoConnect(); location.href = url; return; }
-    if (act === "pco-sync") { el.disabled = true; el.textContent = "Syncing…"; const r = await L.pcoSync(); const c = r?.churches?.[0] || {}; V.pcoMsg = c.pullError ? `Sync problem: ${c.pullError}` : `Synced: ${c.pushed || 0} sent, ${c.pulledPeople ?? 0} team members pulled. Planning Center connected.`; return render(); }
-    if (act === "pco-disconnect") { if (!confirmIt("Disconnect Planning Center? Nothing already sent is removed from Planning Center.")) return; await L.pcoDisconnect(); return render(); }
+    if (act === "conn-pco") { location.href = await L.connectPco(); return; }
+    if (act === "conn-form") { V.connForm = el.dataset.v || null; V.connMsg = null; render(); $("#bz-sub")?.focus(); return; }
+    if (act === "conn-sync") {
+      el.disabled = true; el.textContent = "Syncing…";
+      const c = (await L.sync())?.churches?.[0] || {};
+      V.connMsg = c.pullError ? { ok: false, text: `Sync problem: ${c.pullError}` } : { ok: !c.errors, text: `Synced: ${c.pushed || 0} sent${c.errors ? ` (${c.errors} had a problem; see Recent activity)` : ""}, ${c.pulledPeople ?? 0} team members pulled.` };
+      return render();
+    }
+    if (act === "conn-test") {
+      el.disabled = true; el.textContent = "Testing…";
+      const r = await L.testConnection();
+      V.connMsg = r.ok ? { ok: true, text: `Connection works${r.orgName ? ` (${r.orgName})` : ""}.` } : { ok: false, text: `Connection problem: ${r.error}` };
+      await L.loadChurch(); return render();
+    }
+    if (act === "conn-disconnect") { const n = L.SYSTEMS[P().conn?.system] || "it"; if (!confirmIt(`Disconnect ${n}? Nothing already sent is removed from ${n}.`)) return; await L.disconnect(); V.connMsg = null; return render(); }
+    if (act === "export-people" || act === "export-steps") {
+      const people = act === "export-people";
+      el.disabled = true;
+      const rows = people ? await L.exportPeople(V.exportFilter, V.exportClass) : await L.exportSteps(true);
+      el.disabled = false;
+      if (!rows.length) return toast("No one to export with those choices");
+      const how = await N.saveFile(fileName(people ? "people" : "next-steps", L.active().name), toCsv(rows, people ? PEOPLE_COLUMNS : STEP_COLUMNS));
+      if (how !== "cancelled") toast(`${rows.length} ${rows.length === 1 ? "row" : "rows"} exported`);
+      return;
+    }
+    if (act === "imp-cancel") { V.imp = null; return render(); }
+    if (act === "imp-save") {
+      el.disabled = true;
+      const r = await L.importRoster(V.imp.rows, V.imp.teams);
+      V.imp = null; toast(`Saved: ${r.counted} people on matched teams${r.skipped?.length ? `, ${r.skipped.length} rows skipped` : ""}`);
+      return render();
+    }
   } catch (err) { toast(errMsg(err)); render(); }
 });
 
@@ -548,7 +638,10 @@ document.addEventListener("change", async (e) => {
       await L.setStaff(el.dataset.user, el.value, teams); if (el.value === "team_lead") toast("Now pick their team(s) and save"); return render();
     }
     if (k === "staff-prayer") { const t = P().team.find((x) => x.user_id === el.dataset.user); await L.setStaff(t.user_id, t.role, t.teams, el.checked); return render(); }
-    if (k === "pco-map") { await L.pcoSetMap(el.dataset.id, el.value); toast("Saved"); return render(); }
+    if (k === "team-map") { await L.setMap(el.dataset.source, el.dataset.id, el.value); toast("Saved"); return render(); }
+    if (k === "export-filter") { V.exportFilter = el.value; return; }
+    if (k === "export-class") { V.exportClass = el.value; return; }
+    if (k === "imp-map") { V.imp.teams[el.dataset.id] = el.value; V.imp.preview = await L.previewRoster(V.imp.rows, V.imp.teams); return render(); }
   } catch (err) { toast(errMsg(err)); render(); }
 });
 document.addEventListener("submit", async (e) => {
@@ -568,6 +661,18 @@ document.addEventListener("submit", async (e) => {
     if (kind === "gifts") { const g = [v("g0"), v("g1"), v("g2")].filter(Boolean); await L.memberEdit(f.dataset.id, v("team"), [...new Set(g)]); toast("Saved"); }
     if (kind === "note") { await L.addNote(f.dataset.id, v("body")); toast("Note saved"); }
     if (kind === "step") { await L.addStep(f.dataset.id, v("title"), v("owner"), v("due")); }
+    if (kind === "breeze") {
+      const r = await L.connectBreeze(v("sub"), v("key"));
+      V.connForm = null; V.connMsg = { ok: true, text: `Breeze connected${r.orgName ? ` (${r.orgName})` : ""}. Everyone who's finished class goes in on the next sync, within 15 minutes, or tap Sync now.` };
+    }
+    if (kind === "roster-file") {
+      const file = f.elements.file.files[0];
+      if (!file) throw new Error("Pick a file first");
+      if (file.size > 5e6) throw new Error("That file is over 5 MB. Split it and import each part.");
+      const parsed = rosterRows(parseCsv(await file.text()));
+      if (parsed.error) V.imp = { error: parsed.error };
+      else { V.imp = { file: file.name, rows: parsed.rows, teams: {} }; V.imp.preview = await L.previewRoster(parsed.rows, {}); }
+    }
     if (kind === "staff-teams") { await L.setStaff(f.dataset.user, "team_lead", checked("teams")); toast("Teams saved"); }
     if (kind === "church-edit") {
       const logo = v("logo");
@@ -596,7 +701,10 @@ L.onChange(() => { if (route.name !== "member" && route.name !== "join") render(
 {
   const q = new URLSearchParams(location.hash.split("?")[1] || "");
   const pco = q.get("pco");
-  if (pco) V.pcoMsg = { connected: "Planning Center connected. The first sync runs within 15 minutes, or tap Sync now.", cancelled: "Planning Center wasn't connected (cancelled).", expired: "That Planning Center link expired. Try Connect again.", error: "Planning Center didn't connect. Try again, or check the app setup in SETUP.md." }[pco] || null;
+  const m = { connected: [true, "Planning Center connected. The first sync runs within 15 minutes, or tap Sync now."], cancelled: [false, "Planning Center wasn't connected (cancelled)."],
+    expired: [false, "That Planning Center link expired. Try Connect again."], other: [false, "Breeze is connected. Disconnect it first; a church connects one system at a time."],
+    error: [false, "Planning Center didn't connect. Try again, or check the app setup in SETUP.md."] }[pco];
+  if (m) V.connMsg = { ok: m[0], text: m[1] };
 }
 // Phone app: links to heretoserve.app (class codes, sign-in links) open here
 N.onAppLink(async (url) => {

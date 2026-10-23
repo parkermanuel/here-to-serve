@@ -52,7 +52,7 @@ jobs:
         if: env.SUPABASE_ACCESS_TOKEN != '' && env.SUPABASE_PROJECT_REF != ''
         run: |
           # The functions check who's calling themselves (Administrator/Staff sign-in, or the scheduled job's CRON_SECRET)
-          for f in hts-pco-callback hts-pco-sync hts-notify; do
+          for f in hts-pco-callback hts-sync hts-connect hts-notify; do
             supabase functions deploy "$f" --project-ref "$SUPABASE_PROJECT_REF" --use-api --no-verify-jwt
           done
       - name: Set the server functions' secrets

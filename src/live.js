@@ -76,7 +76,7 @@ export const resetDemo = () => store.set("hts.demo", null);
 export const state = {
   session: null, loaded: false, error: null,
   staff: [], churches: [], activeId: null,
-  classes: [], classLeaders: [], members: [], steps: [], prayer: [], team: [], invites: [], handoff: [], notes: {}, snapshot: null, pco: null,
+  classes: [], classLeaders: [], members: [], steps: [], prayer: [], team: [], invites: [], handoff: [], notes: {}, snapshot: null, conn: null,
 };
 const listeners = new Set();
 export const onChange = (fn) => listeners.add(fn);
@@ -130,7 +130,7 @@ export async function loadAll() {
 let channel = null;
 export async function loadChurch() {
   const cid = state.activeId;
-  Object.assign(state, { classes: [], classLeaders: [], members: [], steps: [], prayer: [], team: [], invites: [], handoff: [], notes: {}, snapshot: null, pco: null });
+  Object.assign(state, { classes: [], classLeaders: [], members: [], steps: [], prayer: [], team: [], invites: [], handoff: [], notes: {}, snapshot: null, conn: null });
   if (!cid) return;
   const role = myRole();
   // Each query only returns what this person's level may see; the database enforces it either way.
@@ -138,14 +138,14 @@ export async function loadChurch() {
     sb.from("staff").select("*").eq("church_id", cid).then(must).then((r) => (state.team = r)),
     sb.from("classes").select("*").eq("church_id", cid).order("class_date", { ascending: false }).then(must).then((r) => (state.classes = r)),
     sb.from("class_leaders").select("*").eq("church_id", cid).then(must).then((r) => (state.classLeaders = r)),
-    sb.from("members").select("id,class_id,status,step,name,email,phone,answers,scores,top_gifts,rec_teams,decision,commitments,team,gifts_override,first_sunday,pco_person_id,pco_synced_at,submitted_at,created_at,updated_at").eq("church_id", cid).order("created_at", { ascending: false }).then(must).then((r) => (state.members = r)),
+    sb.from("members").select("id,class_id,status,step,name,email,phone,answers,scores,top_gifts,rec_teams,decision,commitments,team,gifts_override,first_sunday,ext_system,ext_person_id,ext_synced_at,submitted_at,created_at,updated_at").eq("church_id", cid).order("created_at", { ascending: false }).then(must).then((r) => (state.members = r)),
     sb.from("next_steps").select("*").eq("church_id", cid).order("due", { ascending: true }).then(must).then((r) => (state.steps = r)),
     sb.rpc("hts_handoff", { p_church: cid }).then(must).then((r) => (state.handoff = r || [])),
   ];
   if (prayerOk()) jobs.push(sb.from("prayer_requests").select("*").eq("church_id", cid).order("created_at", { ascending: false }).then(must).then((r) => (state.prayer = r)));
   if (role === "admin" || role === "staff") {
     jobs.push(sb.rpc("hts_snapshot", { p_church: cid }).then(must).then((r) => (state.snapshot = r)));
-    jobs.push(sb.rpc("hts_pco_status", { p_church: cid }).then(must).then((r) => (state.pco = r)));
+    jobs.push(sb.rpc("hts_conn_status", { p_church: cid }).then(must).then((r) => (state.conn = r)));
   }
   if (role === "admin") jobs.push(sb.from("staff_invites").select("*").eq("church_id", cid).is("accepted_at", null).then(must).then((r) => (state.invites = r)));
   await Promise.all(jobs);
@@ -201,23 +201,38 @@ export async function setFirstSunday(memberId, date) { must(await sb.rpc("hts_se
 export async function markPrayed(id, on) { must(await sb.from("prayer_requests").update({ prayed_at: on ? new Date().toISOString() : null }).eq("id", id)); await refresh(); }
 export async function deleteMember(id) { must(await sb.from("members").delete().eq("id", id)); await refresh(); }
 
-// Planning Center
+// Connections: Planning Center or Breeze (one at a time), or spreadsheets
+export const SYSTEMS = { pco: "Planning Center", breeze: "Breeze", csv: "Spreadsheet import" };
 export const pcoReady = () => !!CFG.pcoClientId;
-export async function pcoConnect() {
-  const state_ = must(await sb.rpc("hts_pco_begin", { p_church: state.activeId }));
+export async function connectPco() {
+  const state_ = must(await sb.rpc("hts_connect_begin", { p_church: state.activeId }));
   const redirect = `${CFG.supabaseUrl}/functions/v1/hts-pco-callback`;
   const u = new URL("https://api.planningcenteronline.com/oauth/authorize");
   u.search = new URLSearchParams({ client_id: CFG.pcoClientId, redirect_uri: redirect, response_type: "code", scope: "people services", state: state_ }).toString();
   return u.toString();
 }
-export async function pcoDisconnect() { must(await sb.rpc("hts_pco_disconnect", { p_church: state.activeId })); await refresh(); }
-export async function pcoSetMap(pcoTeam, htsTeam) { must(await sb.rpc("hts_pco_set_map", { p_church: state.activeId, p_pco_team: pcoTeam, p_hts_team: htsTeam || null })); await refresh(); }
-export async function pcoSync() {
-  const { data, error } = await sb.functions.invoke("hts-pco-sync", { body: { church: state.activeId, pull: true } });
-  if (error) throw error;
-  await refresh();
+// Edge function errors come back as a Response; read the plain message out of it
+async function invoke(name, body) {
+  const { data, error } = await sb.functions.invoke(name, { body });
+  if (error) {
+    let msg = error.message;
+    try { const j = await error.context.json(); if (j?.error) msg = j.error; } catch {}
+    throw new Error(msg);
+  }
   return data;
 }
+// The API key goes straight to the server and is never read back
+export async function connectBreeze(subdomain, key) { const r = await invoke("hts-connect", { action: "breeze", church: state.activeId, subdomain, key }); await refresh(); return r; }
+export const testConnection = () => invoke("hts-connect", { action: "test", church: state.activeId });
+export async function disconnect() { must(await sb.rpc("hts_disconnect", { p_church: state.activeId })); await refresh(); }
+export async function setMap(source, extTeam, htsTeam) { must(await sb.rpc("hts_set_map", { p_church: state.activeId, p_source: source, p_ext_team: extTeam, p_hts_team: htsTeam || null })); await refresh(); }
+export async function sync() { const r = await invoke("hts-sync", { church: state.activeId, pull: true }); await refresh(); return r; }
+
+// Spreadsheets: export (Administrator, Staff) and roster import (Administrator)
+export const exportPeople = async (filter, classId) => must(await sb.rpc("hts_export_people", { p_church: state.activeId, p_filter: filter || "all", p_class: classId || null })) || [];
+export const exportSteps = async (openOnly = true) => must(await sb.rpc("hts_export_steps", { p_church: state.activeId, p_open_only: openOnly })) || [];
+export const previewRoster = async (rows, teams) => must(await sb.rpc("hts_import_roster", { p_church: state.activeId, p_rows: rows, p_teams: teams || {}, p_commit: false }));
+export async function importRoster(rows, teams) { const r = must(await sb.rpc("hts_import_roster", { p_church: state.activeId, p_rows: rows, p_teams: teams || {}, p_commit: true })); await refresh(); return r; }
 
 // Phone app: push notifications and account deletion
 export async function registerDevice(token, platform) { must(await sb.rpc("hts_register_device", { p_token: token, p_platform: platform })); }

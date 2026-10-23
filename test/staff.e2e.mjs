@@ -38,16 +38,21 @@ function db(level) {
     staff_invites: () => [],
     notes: () => [{ id: "n1", body: "Teacher by trade.", author_name: "Parker", created_at: "2026-10-19T16:00:00Z" }],
     rpc_hts_handoff: () => [{ member_id: "m1", name: "Daniel Brooks", email: "daniel@x.com", phone: "555", team: "Kids", top_gifts: ["sh", "te", "he"], serve_when: "Sundays", often: "Weekly", first_sunday: null }],
-    rpc_hts_snapshot: () => ({ people: 1, gifts: { sh: 1, te: 1, he: 1 }, teams: DEFAULT_TEAMS.map((t) => ({ name: t.name, serving: t.name === "Kids" ? 3 : 0, fromPco: t.name === "Kids", gifted: 1 })) }),
-    rpc_hts_pco_status: () => ({ connected: true, orgName: "Pinewood", connectedAt: "2026-10-20T10:00:00Z", queued: 0, runs: [{ kind: "pull", started_at: "2026-10-23T12:00:00Z", ok: true, pushed: 0, pulled: 12, error: null }], map: [{ pcoTeamId: "42", pcoTeamName: "Kids Check-in", htsTeam: "Kids" }, { pcoTeamId: "43", pcoTeamName: "Band", htsTeam: null }] }),
+    rpc_hts_snapshot: () => ({ people: 1, gifts: { sh: 1, te: 1, he: 1 }, teams: DEFAULT_TEAMS.map((t) => ({ name: t.name, serving: t.name === "Kids" ? 3 : 0, fromSource: t.name === "Kids", gifted: 1 })), source: "breeze" }),
+    rpc_hts_conn_status: () => ({ connected: true, system: "breeze", orgName: "Pinewood", connectedAt: "2026-10-20T10:00:00Z", source: "breeze", queued: 0, runs: level === "admin" ? [{ system: "breeze", kind: "pull", started_at: "2026-10-23T12:00:00Z", ok: true, pushed: 0, pulled: 12, error: null }] : [], map: [{ source: "breeze", extTeamId: "42", extTeamName: "Volunteers › Kids Check-in", htsTeam: "Kids", people: 12 }, { source: "breeze", extTeamId: "43", extTeamName: "Volunteers › Band", htsTeam: null, people: 0 }] }),
+    rpc_hts_export_people: () => [{ first_name: "Daniel", last_name: "Brooks", email: "daniel@x.com", phone: "555", membership_status: "Member", gift_1: "Shepherding", gift_1_score: 5, recommended_team: "Kids", open_next_steps: "=cmd" }],
+    rpc_hts_export_steps: () => [{ person: "Daniel Brooks", email: "daniel@x.com", step: "Baptism conversation", owner: "Kids Lead", due: "2026-10-20" }],
+    rpc_hts_import_roster: (_q, body) => ({ rows: 3, counted: body.p_teams?.Greeters ? 3 : 2, matchedPeople: 1, saved: !!body.p_commit, skipped: [{ row: 3, reason: "No team" }],
+      teams: { Kids: { htsTeam: "Kids", people: 2 }, Greeters: { htsTeam: body.p_teams?.Greeters || null, people: 1 } }, unmatchedTeams: body.p_teams?.Greeters ? [] : ["Greeters"] }),
   };
 }
 
 let fail = 0; const ok = (c, m) => { console.log(c ? "ok -" : "FAIL -", m); if (!c) fail++; };
 const browser = await chromium.launch({ executablePath: process.env.CHROME || undefined });
 
-async function asLevel(level, visits) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+async function asLevel(level, visits, more) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, acceptDownloads: true });
+  const calls = [];
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const fake = db(level);
@@ -56,7 +61,9 @@ async function asLevel(level, visits) {
     if (u.hostname.endsWith("supabase.co")) {
       const m = u.pathname.match(/\/rest\/v1\/(rpc\/)?(\w+)/);
       const key = m ? (m[1] ? "rpc_" : "") + m[2] : "";
-      const body = fake[key] ? fake[key](u.search) : [];
+      let sent = {}; try { sent = JSON.parse(r.request().postData() || "{}"); } catch {}
+      if (key) calls.push([key, sent]);
+      const body = fake[key] ? fake[key](u.search, sent) : [];
       return r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
     }
     if (u.hostname === "localhost") return r.continue();
@@ -69,6 +76,7 @@ async function asLevel(level, visits) {
     catch { ok(false, `${level}: ${label} (no "${want}")`); if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/fail-${level}-${label.replace(/\W+/g, "-")}.png` }); }
     if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/${level}-${label.replace(/\W+/g, "-")}.png`, fullPage: true });
   }
+  if (more) await more(page, calls);
   ok(errors.length === 0, `${level}: no script errors` + (errors.length ? ": " + errors.join(" | ") : ""));
   await page.close();
 }
@@ -80,11 +88,38 @@ await asLevel("admin", [
   ["#/s/class/" + K, "One-on-one leaders", "class page with QR and class leaders"],
   ["#/s/handoff", "Team handoff", "team handoff"],
   ["#/s/prayer", "Wisdom for a new job", "prayer requests"],
-  ["#/s/settings", cfg.pcoClientId ? "Match your Services teams" : "Planning Center app hasn", "settings with team levels and Planning Center"],
+  ["#/s/settings", "Connected: Breeze", "settings shows which system is connected"],
+  ["#/s/settings", "Match your tags", "Breeze tags to match to teams"],
   ["#/s/account", "Delete my account", "account deletion"],
-]);
+], async (page, calls) => {
+  // Export: a real CSV download, formulas neutralized
+  await page.goto(base + "/#/s/people"); await page.waitForSelector("text=Export to a spreadsheet");
+  await page.selectOption('[data-act-change="export-filter"]', "joined");
+  const [dl] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export-people"]')]);
+  const text = readFileSync(await dl.path(), "utf8");
+  ok(/^pinewood-church-people-\d{4}-\d{2}-\d{2}\.csv$/.test(dl.suggestedFilename()), "admin: people export downloads as a dated CSV");
+  ok(text.startsWith("\uFEFFfirst_name,last_name,email,phone") && text.includes("Daniel,Brooks,daniel@x.com") && text.includes("'=cmd"), "admin: CSV has ChMS headers and a neutralized formula");
+  ok(calls.some(([k, b]) => k === "rpc_hts_export_people" && b.p_filter === "joined"), "admin: export uses the chosen filter");
+  const [dl2] = await Promise.all([page.waitForEvent("download"), page.click('[data-act="export-steps"]')]);
+  ok(readFileSync(await dl2.path(), "utf8").includes("Baptism conversation"), "admin: next steps export");
+  // Import: preview, match a team, save
+  await page.goto(base + "/#/s/settings"); await page.waitForSelector("text=Import team rosters");
+  await page.setInputFiles("#imp-file", { name: "rosters.csv", mimeType: "text/csv", buffer: Buffer.from("Email,Name,Ministry\ndaniel@x.com,Daniel Brooks,Kids\nann@x.com,Ann,Kids\n,Bob,\nzoe@x.com,Zoe,Greeters\n") });
+  await page.click('[data-form="roster-file"] button[type="submit"]');
+  await page.waitForSelector("text=Team in the file");
+  ok(await page.isVisible("text=Not matched yet: Greeters") && await page.isVisible("text=1 row skipped"), "admin: import preview shows unmatched teams and skipped rows");
+  const first = calls.find(([k]) => k === "rpc_hts_import_roster")[1];
+  ok(first.p_commit === false && first.p_rows.length === 4 && first.p_rows[0].team === "Kids", "admin: preview sends parsed rows without saving");
+  await page.selectOption('[data-act-change="imp-map"][data-id="Greeters"]', "Kids");
+  await page.waitForSelector("text=3 will count as serving");
+  await page.click('[data-act="imp-save"]');
+  await page.waitForTimeout(300);
+  const last = calls.filter(([k]) => k === "rpc_hts_import_roster").at(-1)[1];
+  ok(last.p_commit === true && last.p_teams.Greeters === "Kids", "admin: save commits with the chosen team matches");
+});
 await asLevel("staff", [
   ["#/s/home", "Church snapshot", "Today with the snapshot"],
+  ["#/s/people", "Download people (CSV)", "Staff can export"],
   ["#/s/settings", "Next steps checklist", "settings not offered to Staff (lands on Today)"],
 ]);
 await asLevel("team_lead", [
@@ -92,6 +127,8 @@ await asLevel("team_lead", [
   ["#/s/handoff", "Assigned to you", "steps assigned to them"],
   ["#/s/people", "Kids: new people", "no People list (lands on their team)"],
   ["#/s/prayer", "Kids: new people", "no prayer without prayer access"],
-]);
+], async (page) => {
+  ok(!(await page.isVisible("text=Export to a spreadsheet")) && !(await page.isVisible("text=Import team rosters")), "team_lead: no export or import offered");
+});
 await browser.close(); srv.close();
 process.exit(fail ? 1 : 0);

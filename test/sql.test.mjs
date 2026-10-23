@@ -140,7 +140,7 @@ ok((await q(`select who from public.prayer_requests`))[0].who === "Daniel B.", "
 await as(ADMIN, () => q(`select public.hts_set_staff($1, $2, 'staff', null, false)`, [cid, STAFF]));
 ok((await count(STAFF, "prayer_requests")) === 0, "an Administrator can turn prayer access off for anyone");
 await as(ADMIN, () => q(`select public.hts_set_staff($1, $2, 'staff', null, true)`, [cid, STAFF]));
-ok((await count(TL, "pco_connections")) === 0 && (await count(ADMIN, "pco_connections")) === 0, "nobody, not even an Administrator, can read Planning Center tokens");
+ok((await count(TL, "connections")) === 0 && (await count(ADMIN, "connections")) === 0, "nobody, not even an Administrator, can read connection credentials");
 
 // Handoff: Team Leads see only their own teams
 const hk = await as(TL, () => q(`select * from public.hts_handoff($1)`, [cid]));
@@ -188,24 +188,56 @@ ok(!(await tryAs(ADMIN, `update public.churches set accent='#123456', logo_url='
 ok(!!(await tryAs(ADMIN, `update public.churches set accent='red' where id=$1`, [cid])), "accent must be a hex color");
 ok(!!(await tryAs(ADMIN, `update public.classes set join_code='abc' where church_id=$1`, [cid])), "class codes can't be changed by hand");
 
-// Planning Center
-ok(!!(await tryAs(STAFF, `select public.hts_pco_begin($1)`, [cid])), "only Administrators connect Planning Center");
-const state = (await one(ADMIN, `select public.hts_pco_begin($1) s`, [cid])).s;
+// Spreadsheets: export (Administrator and Staff) and roster import (Administrator)
+const exp = await as(STAFF, () => q(`select * from public.hts_export_people($1)`, [cid]));
+const dan = exp.find((r) => r.email === "daniel@b.com");
+ok(exp.length === 2 && dan.first_name === "Daniel" && dan.last_name === "Brooks" && dan.membership_status === "Member" && dan.gift_1 && Number.isInteger(dan.gift_1_score) && /Connect to a group/.test(dan.open_next_steps || "") && !/Baptism/.test(dan.open_next_steps || ""), "Staff export people with names split, status, gifts with scores and open steps");
+ok(!("prayer" in dan) && !Object.values(dan).some((v) => String(v).includes("Wisdom for a new job")), "exports never include prayer requests");
+ok((await as(ADMIN, () => q(`select * from public.hts_export_people($1, 'not_ready')`, [cid]))).length === 1, "export filtered to not ready");
+ok((await as(ADMIN, () => q(`select * from public.hts_export_people($1, 'all', $2)`, [cid, klass.id]))).length === 2, "export filtered to one class");
+ok(!!(await tryAs(TL, `select * from public.hts_export_people($1)`, [cid])), "Team Leads can't export");
+ok(!!(await tryAs(OTHER, `select * from public.hts_export_people($1)`, [cid])), "another church can't export ours");
+ok((await as(STAFF, () => q(`select * from public.hts_export_steps($1)`, [cid]))).length >= 2 && !!(await tryAs(TL, `select * from public.hts_export_steps($1)`, [cid])), "Staff export next steps; Team Leads can't");
+const rows = [{ email: "daniel@b.com", team: "Kids Check-in" }, { name: "Pat Volunteer", team: "Kids Check-in" }, { email: "x@y.org", team: "kids" }, { email: "bad", team: "Kids" }, { name: "No Team" }, { email: "daniel@b.com", team: "Kids Check-in" }, { name: "Sam Band", team: "Band" }];
+ok(!!(await tryAs(STAFF, `select public.hts_import_roster($1, $2)`, [cid, JSON.stringify(rows)])), "Staff can't import");
+const pv = (await one(ADMIN, `select public.hts_import_roster($1, $2, $3) r`, [cid, JSON.stringify(rows), JSON.stringify({ "Kids Check-in": "Kids" })])).r;
+ok(pv.saved === false && pv.rows === 7 && pv.skipped.length === 2 && pv.teams["Kids Check-in"].people === 2 && pv.teams.kids.htsTeam === "Kids" && pv.unmatchedTeams.join() === "Band", "the preview matches teams, finds bad rows and unmatched teams, and counts a repeat once");
+ok(pv.matchedPeople === 1 && pv.counted === 3, "the preview says who took the class here and how many will count");
+ok((await q(`select count(*)::int n from public.rosters where church_id=$1`, [cid]))[0].n === 0, "the preview saves nothing");
+ok(!!(await tryAs(ADMIN, `select public.hts_import_roster($1, $2, $3, true)`, [cid, JSON.stringify(rows), JSON.stringify({ Band: "Choir" })])), "a team that isn't on the list is refused");
+await as(ADMIN, () => q(`select public.hts_import_roster($1, $2, $3, true)`, [cid, JSON.stringify(rows), JSON.stringify({ "Kids Check-in": "Kids" })]));
+let snapK = (await one(STAFF, `select public.hts_snapshot($1) s`, [cid])).s;
+ok(snapK.source === "csv" && snapK.teams.find((t) => t.name === "Kids").serving === 3 && snapK.teams.find((t) => t.name === "Kids").fromSource, "after import, 'serving now' for Kids comes from the spreadsheet (3 people)");
+ok((await q(`select member_id from public.rosters where person_key='daniel@b.com'`))[0].member_id === m.id, "imported rows are linked to people who took the class");
+await as(ADMIN, () => q(`select public.hts_set_map($1, 'csv', 'band', 'Worship')`, [cid]));
+ok((await one(STAFF, `select public.hts_snapshot($1) s`, [cid])).s.teams.find((t) => t.name === "Worship").serving === 1, "matching an unmatched team afterwards counts it");
+await as(ADMIN, () => q(`select public.hts_import_roster($1, $2, '{}', true)`, [cid, JSON.stringify([{ email: "solo@x.org", team: "Kids" }])]));
+ok((await q(`select count(*)::int n from public.rosters where church_id=$1`, [cid]))[0].n === 1, "a new import replaces the last one");
+ok((await count(TL, "rosters")) === 0, "Team Leads don't see rosters");
+
+// Connections: one system at a time, credentials never readable
+ok(!!(await tryAs(STAFF, `select public.hts_connect_begin($1)`, [cid])), "only Administrators connect a people system");
+const state = (await one(ADMIN, `select public.hts_connect_begin($1) s`, [cid])).s;
 ok(state && state.length === 64, "connect starts with a one-time state code");
-ok((await count(ADMIN, "pco_oauth_states")) === 0, "state codes aren't readable from the browser");
-await q(`insert into public.pco_connections(church_id, access_token, refresh_token, expires_at, pco_org_name) values ($1, 'AT', 'RT', now() + interval '2 hours', 'Pinewood')`, [cid]);
+ok((await count(ADMIN, "oauth_states")) === 0, "state codes aren't readable from the browser");
+await q(`insert into public.connections(church_id, system, subdomain, api_key, org_name) values ($1, 'breeze', 'pinewood', 'SECRETKEY', 'Pinewood')`, [cid]);
+ok(!!(await tryAs(ADMIN, `select public.hts_connect_begin($1)`, [cid])), "can't start Planning Center while Breeze is connected");
 await as(ADMIN, () => q(`select public.hts_member_edit($1, 'Kids', array['sh'])`, [m.id]));
-ok((await q(`select count(*)::int n from public.pco_queue where member_id=$1`, [m.id]))[0].n === 1, "a leader's change queues the person for Planning Center");
-const pst = (await one(STAFF, `select public.hts_pco_status($1) s`, [cid])).s;
-ok(pst.connected && pst.orgName === "Pinewood" && !JSON.stringify(pst).includes("AT"), "status shows connected without ever sending tokens");
-await q(`insert into public.pco_team_map(church_id, pco_team_id, pco_team_name) values ($1, '42', 'Kids Check-in')`, [cid]);
-await q(`insert into public.pco_rosters(church_id, pco_team_id, pco_person_id, name) values ($1, '42', 'p1', 'A'), ($1, '42', 'p2', 'B'), ($1, '42', 'p3', 'C')`, [cid]);
-ok(!!(await tryAs(STAFF, `select public.hts_pco_set_map($1, '42', 'Kids')`, [cid])), "Staff can't map teams");
-await as(ADMIN, () => q(`select public.hts_pco_set_map($1, '42', 'Kids')`, [cid]));
-ok((await one(STAFF, `select public.hts_snapshot($1) s`, [cid])).s.teams.find((t) => t.name === "Kids").serving === 3, "once mapped, 'serving now' comes from Planning Center's roster");
-ok((await count(TL, "pco_rosters")) === 0, "Team Leads don't see Planning Center rosters");
-await as(ADMIN, () => q(`select public.hts_pco_disconnect($1)`, [cid]));
-ok((await q(`select count(*)::int n from public.pco_connections where church_id=$1`, [cid]))[0].n === 0, "disconnect removes the tokens");
+ok((await q(`select count(*)::int n from public.sync_queue where member_id=$1`, [m.id]))[0].n === 1, "a leader's change queues the person for the connected system");
+const cst = (await one(STAFF, `select public.hts_conn_status($1) s`, [cid])).s;
+ok(cst.connected && cst.system === "breeze" && cst.orgName === "Pinewood" && !JSON.stringify(cst).includes("SECRETKEY"), "status shows Breeze is connected without ever sending the key");
+await q(`insert into public.team_map(church_id, source, ext_team_id, ext_team_name) values ($1, 'breeze', '42', 'Volunteers › Kids')`, [cid]);
+await q(`insert into public.rosters(church_id, source, ext_team_id, person_key, name) values ($1, 'breeze', '42', 'p1', 'A'), ($1, 'breeze', '42', 'p2', 'B'), ($1, 'breeze', '42', 'p3', 'C'), ($1, 'breeze', '42', 'p4', 'D')`, [cid]);
+ok(!!(await tryAs(STAFF, `select public.hts_set_map($1, 'breeze', '42', 'Kids')`, [cid])), "Staff can't match teams");
+await as(ADMIN, () => q(`select public.hts_set_map($1, 'breeze', '42', 'Kids')`, [cid]));
+snapK = (await one(STAFF, `select public.hts_snapshot($1) s`, [cid])).s;
+ok(snapK.source === "breeze" && snapK.teams.find((t) => t.name === "Kids").serving === 4, "while Breeze is connected, 'serving now' comes from its roster, not the spreadsheet");
+await as(ADMIN, () => q(`select public.hts_disconnect($1)`, [cid]));
+ok((await q(`select count(*)::int n from public.connections where church_id=$1`, [cid]))[0].n === 0, "disconnect removes the credentials");
+ok((await one(STAFF, `select public.hts_snapshot($1) s`, [cid])).s.source === "csv", "after disconnecting, counts fall back to the spreadsheet import");
+await q(`insert into public.connections(church_id, system, access_token, refresh_token, expires_at) values ($1, 'pco', 'AT', 'RT', now())`, [cid]);
+ok((await one(STAFF, `select public.hts_conn_status($1) s`, [cid])).s.system === "pco", "Planning Center shows as the connected system");
+await as(ADMIN, () => q(`select public.hts_disconnect($1)`, [cid]));
 
 // Devices and account deletion
 ok(!(await tryAs(TL, `select public.hts_register_device($1, 'ios')`, ["t".repeat(64)])), "a staff phone registers for notifications");

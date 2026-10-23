@@ -179,8 +179,9 @@ export async function ensureSetup(client, known = {}) {
 }
 
 // Push one person. Idempotent: finds before creating, updates fields in place, adds the note only once.
-export async function pushMember(client, ids, m, commitments, { noteAlreadySent = false } = {}) {
-  let personId = m.pco_person_id || null;
+// state = what we last wrote for them ({noted: decision}); returns the new state.
+export async function pushMember(client, ids, m, commitments, state = {}) {
+  let personId = m.ext_system === "pco" ? m.ext_person_id || null : null;
   if (personId) {
     try { await client.get(PATH.person(personId)); } catch (e) { if (e.status === 404) personId = null; else throw e; }
   }
@@ -197,16 +198,16 @@ export async function pushMember(client, ids, m, commitments, { noteAlreadySent 
       await client.post(PATH.createFieldDatum(personId), { data: { type: "FieldDatum", attributes: { value }, relationships: { field_definition: { data: { type: "FieldDefinition", id: defId } } } } });
     }
   }
-  let noted = noteAlreadySent;
-  if (!noted && m.decision) {
+  let noted = personId === m.ext_person_id ? state.noted || null : null;
+  if (m.decision && noted !== m.decision) {
     await client.post(PATH.createNote(personId), { data: { type: "Note", attributes: { note: noteText(m, commitments), note_category_id: ids.noteCategory } } });
-    noted = true;
+    noted = m.decision;
   }
-  return { personId, noted };
+  return { personId, state: { ...state, noted } };
 }
 
 // Pull every Services team and who's on it. Returns { teams: [{id, name}], roster: [{teamId, personId, name}] }.
-export async function pullTeams(client) {
+export async function pullTeams(client, _opts = {}) {
   const teams = (await client.all(PATH.servicesTeams)).data.map((t) => ({ id: String(t.id), name: t.attributes?.name || "Team " + t.id }));
   const roster = [];
   for (const t of teams) {
@@ -217,4 +218,9 @@ export async function pullTeams(client) {
     }
   }
   return { teams, roster };
+}
+
+export async function test(client) {
+  const o = await client.get(PATH.organization);
+  return { orgName: o?.data?.attributes?.name || null };
 }
