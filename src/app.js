@@ -33,9 +33,12 @@ const setAccent = (c) => document.documentElement.style.setProperty("--accent", 
 // ---------------- routing ----------------
 let route = { name: "home", arg: null };
 function parse() {
+  // heretoserve.app/join (typed by hand) loads through 404.html; send it to the code screen
+  if (!location.hash && /^\/join\/?$/i.test(location.pathname)) return { name: "typecode", arg: null };
   const h = location.hash.replace(/^#\/?/, "");
   const [a, b, c] = stripQuery(h).split("/");
   if (a === "j" && b) return { name: "join", arg: b };
+  if (a === "join") return { name: "typecode", arg: null };
   if (a === "m" && b) return { name: "member", arg: b };
   if (a === "demo") return { name: "member", arg: "demo" };
   if (a === "invite" && b) return { name: "invite", arg: b };
@@ -51,8 +54,19 @@ async function onRoute() {
   route = parse();
   window.scrollTo(0, 0);
   if (route.name === "join") return startJoin(route.arg);
+  if (route.name === "typecode") return renderTypeCode();
   if (route.name === "member") return startMember(route.arg);
   render();
+}
+
+// Owner, 23 Oct 2026: a typed fallback for phones that can't scan. heretoserve.app/join, then the code on the screen.
+const showCode = (c) => String(c || "").toUpperCase().replace(/(.{4})(?=.)/g, "$1-");
+const readCode = (t) => String(t || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+function renderTypeCode(err) {
+  $("#top").innerHTML = "";
+  $("#app").innerHTML = `<div class="phone"><div class="pbody"><h1>Join your class</h1><p class="lead">Type the code on the screen. Dashes and capitals don't matter.</p>
+    <form data-form="typecode" class="q"><input class="in" id="tc-code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD-1234-EF56" required aria-label="Class code" style="font-size:22px;letter-spacing:.08em;text-transform:uppercase">
+    ${err ? `<div class="err">${esc(err)}</div>` : ""}<button class="cta" type="submit">Start</button></form></div></div>`;
 }
 
 // ================= MEMBER FLOW =================
@@ -422,7 +436,9 @@ function viewClass() {
   const leaders = P().classLeaders.filter((c) => c.class_id === k.id).map((c) => c.user_id);
   return `<div class="row"><button class="btn quiet" data-act="nav" data-to="classes">← Classes</button><h1 class="grow">${esc(k.name)}</h1><span class="${k.open ? "pill ok" : "pill"}">${k.open ? "Open" : "Closed"}</span></div>
     <div class="cols">${core ? `<section class="panel"><h2>Put this on the screen</h2><p class="hint">People scan it with their phone camera, or with the Here To Serve app. No download needed.</p>
-      ${img ? `<img class="qr" src="${img}" alt="QR code for the class link">` : ""}<div class="code">${esc(link)}</div>
+      ${img ? `<img class="qr" src="${img}" alt="QR code for the class link">` : ""}
+      <p class="hint" style="margin-bottom:0">Can't scan? Go to <b>${esc(L.typeUrl())}</b> and type:</p><div class="code" style="font-size:28px;letter-spacing:.08em;text-align:center">${esc(showCode(k.join_code))}</div>
+      <p class="fine">Answers save on each phone as people go, so a weak signal won't lose anything. Put your Wi-Fi name and password on the screen too.</p>
       <div class="row"><button class="btn ghost" data-act="copy" data-v="${esc(link)}">Copy link</button><button class="btn quiet" data-act="class-open" data-id="${k.id}" data-v="${k.open ? "0" : "1"}">${k.open ? "Close the class" : "Reopen the class"}</button></div>
       <p class="fine">Links stop taking new people 30 days after the class date, or when you close the class.</p>
       <h2 style="margin-top:8px">One-on-one leaders</h2><p class="hint">Team Leads you add here can see and take notes on this class's people while the class is open.</p>
@@ -704,6 +720,11 @@ document.addEventListener("submit", async (e) => {
       else { V.imp = { file: file.name, rows: parsed.rows, teams: {} }; V.imp.preview = await L.previewRoster(parsed.rows, {}); }
     }
     if (kind === "staff-teams") { await L.setStaff(f.dataset.user, "team_lead", checked("teams")); toast("Teams saved"); }
+    if (kind === "typecode") {
+      const code = readCode(v("tc-code"));
+      if (!/^[0-9a-f]{12}$/.test(code)) { renderTypeCode("That code doesn't look right. It's 12 letters and numbers, like ABCD-1234-EF56."); return; }
+      return go("#/j/" + code);
+    }
     if (kind === "church-edit") {
       const logo = v("logo");
       if (logo && !safeUrl(logo)) throw new Error("The logo link needs to start with https://");

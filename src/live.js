@@ -9,6 +9,8 @@ export const sb = LIVE ? createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, { au
 
 export const siteUrl = () => (CFG.siteUrl || location.origin).replace(/\/$/, "");
 export const joinLink = (code) => `${siteUrl()}/#/j/${code}`;
+// The address people type when they can't scan (owner, 23 Oct 2026): heretoserve.app/join
+export const typeUrl = () => `${siteUrl().replace(/^https?:\/\//, "")}/join`;
 export const inviteLink = (token) => `${siteUrl()}/#/invite/${token}`;
 const must = ({ data, error }) => { if (error) throw error; return data; };
 const store = {
