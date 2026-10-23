@@ -1,7 +1,7 @@
 // Screens: the member phone flow (#/j/<code>, #/m/<key>, #/demo) and the staff dashboard (#/ and #/s/...).
 import qrcode from "qrcode-generator";
-import { GIFTS, GIFT_KEYS, VERSES, PAIRS, CHOICES, PINEWOOD_BELIEFS, ROLE_NAMES } from "./bank.js";
-import { results, countGifts } from "./engine.js";
+import { GIFTS, GIFT_KEYS, VERSES, PAIRS, CHOICES, PINEWOOD_BELIEFS, ROLE_NAMES, DEFAULT_TEAMS } from "./bank.js";
+import { results, countGifts, cleanTeams, parseCommitments } from "./engine.js";
 import * as L from "./live.js";
 import * as N from "./native.js";
 import { privacyPage, termsPage } from "./pages.js";
@@ -562,9 +562,17 @@ function viewSettings() {
     ${P().invites.length ? `<p class="hint">Waiting to accept: ${esc(P().invites.map((i) => `${i.email} (${ROLE_NAMES[i.role]})`).join(", "))}</p>` : ""}</section>
   ${connPanel()}
   ${importPanel()}
-  <section class="panel"><h2>Teams and commitments</h2><p class="hint">Your teams, the gifts that point to each, and the commitments people make. Editing these comes in the next update.</p>
-    ${(s.teams || []).map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.name)}</b><span class="small">${esc((t.gifts || []).map((g) => GIFTS[g]).join(", "))}${t.check ? " · background check" : ""}</span></div></div>`).join("")}
-    <p class="hint">${esc((s.commitments || []).map((x) => x.word).join(" · "))}</p></section>`;
+  <section class="panel"><h2>Serving teams</h2><p class="hint">Your teams and the gifts that point people to each (up to 3). Removing or renaming a team doesn't move anyone already placed on it.</p>
+    <form data-form="teams" class="q">${[...(s.teams || []), { name: "", gifts: [], check: false, _new: true }].map((t, i) => `<div class="teamedit">
+      <input class="in" name="t-name-${i}" value="${esc(t.name)}" maxlength="40" placeholder="${t._new ? "Add a team" : ""}" aria-label="Team name">
+      <input type="hidden" name="t-orig-${i}" value="${esc(t.name)}">
+      <div class="giftpick">${GIFT_KEYS.map((g) => `<label class="small"><input type="checkbox" name="t-gift-${i}" value="${g}" ${(t.gifts || []).includes(g) ? "checked" : ""}> ${esc(GIFTS[g])}</label>`).join("")}</div>
+      <div class="inline"><label class="small"><input type="checkbox" name="t-check-${i}" ${t.check ? "checked" : ""}> Background check</label>${t._new ? "" : `<label class="small"><input type="checkbox" name="t-remove-${i}"> Remove</label>`}</div></div>`).join("")}
+      <input type="hidden" name="t-count" value="${(s.teams || []).length + 1}">
+      <div class="row"><button class="btn" type="submit">Save teams</button><button class="btn quiet" type="button" data-act="pinewood-teams">Reset to Pinewood's</button></div></form></section>
+  <section class="panel"><h2>Membership commitments</h2><p class="hint">What people check off when they join. One per line: <b>Word | Statement | Passage</b>. Keep a line starting with <b>Belief</b> to show the "Read what we believe" pop-up beside it.</p>
+    <form data-form="commitments" class="q"><textarea class="in" name="commitments" style="min-height:220px;font-size:14px" aria-label="Commitments">${esc((s.commitments || []).map((x) => [x.word, x.statement, x.verse].join(" | ")).join("\n"))}</textarea>
+    <button class="btn" type="submit" style="align-self:flex-start">Save commitments</button></form></section>`;
 }
 
 function viewAccount() {
@@ -603,6 +611,7 @@ document.addEventListener("click", async (e) => {
     if (act === "remove-staff") { if (!confirmIt("Remove this person from your team?")) return; await L.setStaff(el.dataset.id, "remove"); return render(); }
     if (act === "delete-member") { if (!confirmIt("Delete everything this person entered, plus their notes and steps? This can't be undone.")) return; await L.deleteMember(el.dataset.id); return go("#/s/people"); }
     if (act === "delete-account") { if (!confirmIt("Delete your account? This can't be undone.")) return; await L.deleteMyAccount(); toast("Your account was deleted"); return go("#/"); }
+    if (act === "pinewood-teams") { if (!confirmIt("Replace your teams with Pinewood's nine? People already placed stay where they are.")) return; const c = L.active(); await L.updateChurch({ settings: { ...(c.settings || {}), teams: DEFAULT_TEAMS } }); toast("Teams reset"); return render(); }
     if (act === "pinewood-beliefs") { const t = $('textarea[name="beliefs"]'); if (t) t.value = PINEWOOD_BELIEFS.map((b) => [b.word, b.text, b.verse].join(" | ")).join("\n"); return; }
     if (act === "conn-pco") { location.href = await L.connectPco(); return; }
     if (act === "conn-form") { V.connForm = el.dataset.v || null; V.connMsg = null; render(); $("#bz-sub")?.focus(); return; }
@@ -699,6 +708,18 @@ document.addEventListener("submit", async (e) => {
       const logo = v("logo");
       if (logo && !safeUrl(logo)) throw new Error("The logo link needs to start with https://");
       await L.updateChurch({ name: v("name"), logo_url: logo || null, accent: hex(v("accent")) }); toast("Saved");
+    }
+    if (kind === "teams") {
+      const c = L.active(), n = Number(v("t-count")) || 0, rows = [];
+      for (let i = 0; i < n; i++) rows.push({ name: v(`t-name-${i}`), orig: v(`t-orig-${i}`), gifts: checked(`t-gift-${i}`), check: !!f.querySelector(`input[name="t-check-${i}"]`)?.checked, remove: !!f.querySelector(`input[name="t-remove-${i}"]`)?.checked });
+      const r = cleanTeams(rows, c.settings?.teams || [], GIFT_KEYS);
+      if (r.error) throw new Error(r.error);
+      await L.updateChurch({ settings: { ...(c.settings || {}), teams: r.teams } }); toast("Teams saved");
+    }
+    if (kind === "commitments") {
+      const c = L.active(), r = parseCommitments(v("commitments"), c.settings?.commitments || []);
+      if (r.error) throw new Error(r.error);
+      await L.updateChurch({ settings: { ...(c.settings || {}), commitments: r.commitments } }); toast("Commitments saved");
     }
     if (kind === "beliefs") {
       const lines = v("beliefs").split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p[0] && p[1]);

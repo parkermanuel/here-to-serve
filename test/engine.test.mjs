@@ -1,6 +1,6 @@
 // Scoring checks. Run before every deploy.
 import { PAIRS, GIFT_KEYS, DEFAULT_TEAMS, PINEWOOD_BELIEFS, DEFAULT_COMMITMENTS } from "../src/bank.js";
-import { countGifts, topGifts, recommendTeams, results, staffSteps, memberSteps } from "../src/engine.js";
+import { countGifts, topGifts, recommendTeams, results, staffSteps, memberSteps, cleanTeams, parseCommitments } from "../src/engine.js";
 import { classCodeFrom } from "../src/native.js";
 
 let fail = 0;
@@ -49,5 +49,19 @@ ok(recommendTeams(s, [], []).length === 0, "no teams, no recommendations");
 // The phone app's QR scanner only accepts class codes
 ok(classCodeFrom("https://heretoserve.app/#/j/ab12cd34ef56") === "ab12cd34ef56" && classCodeFrom("ab12cd34ef56") === "ab12cd34ef56", "scanner reads a class link or a bare code");
 ok(classCodeFrom("https://example.com/login") === null, "scanner ignores anything that isn't a class code");
+
+
+// Churches edit their own teams and commitments (owner, 23 Oct 2026)
+{
+  const t = cleanTeams([{ name: "Kids Ministry", orig: "Kids", gifts: ["sh", "te", "zz"], check: true }, { name: "Coffee", gifts: ["ho"] }, { name: "Security", gifts: ["he"], remove: true }], DEFAULT_TEAMS, GIFT_KEYS);
+  ok(t.teams.length === 2 && t.teams[0].boosts.includes("Kids") && t.teams[0].gifts.join() === "sh,te" && t.teams[0].check, "renamed team keeps its passions; unknown gifts dropped; removed team gone");
+  ok(t.teams[1].boosts.length === 0, "a new team starts with no passions");
+  ok(!!cleanTeams([{ name: "A", gifts: ["he"] }, { name: "a", gifts: ["he"] }], [], GIFT_KEYS).error, "duplicate team names are refused");
+  ok(!!cleanTeams([{ name: "A", gifts: [] }], [], GIFT_KEYS).error, "a team needs at least one gift");
+  ok(!!cleanTeams([], [], GIFT_KEYS).error, "at least one team");
+  const c = parseCommitments("Faith | I follow Jesus and was baptized. | Acts 2:41\nBelief | I affirm what we believe. | 2 Timothy 1:13\nSabbath | I rest weekly. | Exodus 20:8", DEFAULT_COMMITMENTS);
+  ok(c.commitments.length === 3 && c.commitments[0].k === "faith" && c.commitments[1].k === "belief" && c.commitments[2].k === "sabbath", "commitments keep their keys; new ones get one");
+  ok(!!parseCommitments("Word only", []).error && !!parseCommitments("", []).error, "commitments need a statement, and at least one");
+}
 
 process.exit(fail ? 1 : 0);
