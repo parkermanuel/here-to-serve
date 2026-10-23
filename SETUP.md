@@ -20,8 +20,7 @@ Repo **Settings**, then **Secrets and variables**, then **Actions**. Add these. 
 
 | Kind | Name | Where to find it | Turns on |
 |---|---|---|---|
-| Secret | `SUPABASE_DB_URL` | Supabase: **Connect**, **Session pooler** connection string, with your database password filled in (reset it under **Project Settings**, **Database** if you didn't keep it) | Database updates on every merge |
-| Secret | `SUPABASE_ACCESS_TOKEN` | supabase.com: **Account**, **Access Tokens**, **Generate** | Server functions deploy |
+| Secret | `SUPABASE_ACCESS_TOKEN` | supabase.com: **Account**, **Access Tokens**, **Generate** (scope it to the here-to-serve project) | Database updates and server functions on every merge (no database password needed) |
 | Variable | `SUPABASE_PROJECT_REF` | `lfeypyanuqagvuuqothd` | Server functions and the 15-minute job |
 | Variable | `SITE_URL` | `https://heretoserve.app` | Links in redirects |
 | Secret | `CRON_SECRET` | Make one up: 40+ random letters and numbers | The 15-minute Planning Center / Breeze sync and staff notifications |
