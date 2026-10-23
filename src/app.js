@@ -1,0 +1,495 @@
+// Screens: the member phone flow (#/j/<code>, #/m/<key>, #/demo) and the staff dashboard (#/ and #/s/...).
+import qrcode from "qrcode-generator";
+import { GIFTS, GIFT_KEYS, VERSES, PAIRS, CHOICES, PINEWOOD_BELIEFS, ROLE_NAMES } from "./bank.js";
+import { results, countGifts } from "./engine.js";
+import * as L from "./live.js";
+
+// ---------------- utilities ----------------
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const safeUrl = (u) => { try { const x = new URL(String(u)); return x.protocol === "https:" ? x.href : null; } catch { return null; } };
+const hex = (c) => (/^#[0-9A-Fa-f]{6}$/.test(String(c)) ? c : "#1E4D3A");
+const today = () => new Date().toISOString().slice(0, 10);
+const fmt = (d) => { if (!d) return ""; try { return new Date(String(d).length === 10 ? d + "T12:00:00" : d).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch { return d; } };
+const toast = (msg) => { const t = document.createElement("div"); t.className = "toast"; t.setAttribute("role", "status"); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2400); };
+const errMsg = (e) => e?.message || String(e);
+const ICON = {
+  back: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>',
+  check: (w = 16, sw = 3) => `<svg width="${w}" height="${w}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg>`,
+  circle: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:1px;color:var(--accent)"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>',
+  lock: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex-shrink:0;margin-top:2px"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  x: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+};
+const MARK = '<span class="mark">here to serve<i>.</i></span>';
+const logoBox = (church) => {
+  const u = safeUrl(church?.logoUrl ?? church?.logo_url);
+  return `<div class="logo" role="img" aria-label="${esc(church?.name || "Church")} logo">${u ? `<img src="${esc(u)}" alt="">` : esc((church?.name || "?").trim()[0] || "?")}</div>`;
+};
+const setAccent = (c) => document.documentElement.style.setProperty("--accent", hex(c));
+
+// ---------------- routing ----------------
+let route = { name: "home", arg: null };
+function parse() {
+  const h = location.hash.replace(/^#\/?/, "");
+  const [a, b, c] = h.split("/");
+  if (a === "j" && b) return { name: "join", arg: b };
+  if (a === "m" && b) return { name: "member", arg: b };
+  if (a === "demo") return { name: "member", arg: "demo" };
+  if (a === "invite" && b) return { name: "invite", arg: b };
+  if (a === "s" && b) return { name: b, arg: c || null };
+  return { name: "home", arg: null };
+}
+const go = (hash) => { if (location.hash !== hash) location.hash = hash; else onRoute(); };
+window.addEventListener("hashchange", onRoute);
+
+async function onRoute() {
+  route = parse();
+  window.scrollTo(0, 0);
+  if (route.name === "join") return startJoin(route.arg);
+  if (route.name === "member") return startMember(route.arg);
+  render();
+}
+
+// ================= MEMBER FLOW =================
+const STEPS = ["welcome", "about", "household", "faith", "story", "skills", "passions", "availability", "prayer", "pause", "gifts", "results", "decide", "commit", "sent"];
+const PART1 = 8; // about .. prayer
+let M = null; // { key, church, i, q, a, picks, decision, commits, sheet, busy, error, demo }
+
+async function startJoin(code) {
+  $("#app").innerHTML = `<div class="phone"><div class="pbody center"><p class="lead">Opening your class…</p></div></div>`;
+  try {
+    const key = await L.join(code);
+    if (!key) { $("#app").innerHTML = `<div class="phone"><div class="pbody center"><h1>This class link isn't open</h1><p class="lead">Ask the person leading your class for the current code.</p></div></div>`; return; }
+    location.replace("#/m/" + key);
+  } catch (e) { $("#app").innerHTML = `<div class="phone"><div class="pbody center"><h1>We couldn't open the class</h1><p class="lead">${esc(errMsg(e))}</p></div></div>`; }
+}
+
+async function startMember(key) {
+  $("#top").innerHTML = ""; $("#foot").innerHTML = "";
+  $("#app").innerHTML = `<div class="phone"><div class="pbody center"><p class="lead">Loading…</p></div></div>`;
+  try {
+    const r = await L.open(key);
+    if (!r) { $("#app").innerHTML = `<div class="phone"><div class="pbody center"><h1>We couldn't find your form</h1><p class="lead">Scan the class code again to start.</p></div></div>`; return; }
+    const mem = r.member;
+    const a = { ...(mem.answers || {}), adult: mem.adult, prayer: mem.prayer || "" };
+    let i = mem.status === "submitted" ? STEPS.indexOf("sent") : Math.min(Math.max(0, mem.step || 0), STEPS.indexOf("results"));
+    const picks = Array.isArray(mem.picks) ? mem.picks.slice() : [];
+    let q = 0; while (q < PAIRS.length - 1 && picks[q]) q++;
+    if (STEPS[i] === "gifts" && picks.length >= PAIRS.length && picks.every(Boolean)) i = STEPS.indexOf("results");
+    M = { key, church: r.church || L.DEMO_CHURCH, i, q, a, picks, decision: null, commits: [], sheet: false, busy: false, error: null, demo: !!r.demo || key === "demo" };
+    setAccent(M.church.accent);
+    document.title = (M.church.name || "Here To Serve") + " · membership";
+    renderMember();
+  } catch (e) { $("#app").innerHTML = `<div class="phone"><div class="pbody center"><h1>Something went wrong</h1><p class="lead">${esc(errMsg(e))}</p></div></div>`; }
+}
+
+const stepName = () => STEPS[M.i];
+async function persist() {
+  try { await L.save(M.key, M.a, M.picks, M.i); M.error = null; }
+  catch (e) { M.error = "We couldn't save just now. Keep going; we'll try again on the next screen."; }
+}
+
+function chips(key, multi) {
+  const cur = M.a[key];
+  return `<div class="chips">${CHOICES[key].map((o) => {
+    const on = multi ? (cur || []).includes(o) : cur === o;
+    return `<button type="button" class="chip" aria-pressed="${on}" data-act="${multi ? "multi" : "single"}" data-k="${key}" data-v="${esc(o)}">${esc(o)}</button>`;
+  }).join("")}</div>`;
+}
+const field = (id, label, type, placeholder, key) => `<div><label class="fl" for="${id}">${label}</label><input class="in" id="${id}" type="${type}" placeholder="${esc(placeholder)}" data-in="${key}" value="${esc(M.a[key] || "")}" autocomplete="${type === "email" ? "email" : type === "tel" ? "tel" : key === "name" ? "name" : "off"}"></div>`;
+
+function screen() {
+  const c = M.church, s = stepName();
+  if (s === "welcome") return `<div class="pbody" style="padding-top:56px">
+    ${MARK.replace('class="mark"', 'class="mark" style="font-size:20px"')}
+    <div class="church">${logoBox(c)}<b>${esc(c.name)}</b></div>
+    <h1 class="big">Let's find where you fit.</h1>
+    <p class="lead">About 15 minutes. Part 1 now, Part 2 after a short break. Your answers help our team walk with you into your next step.</p>
+    <div class="card parts"><div class="part"><span class="num">1</span>About you · 7 minutes</div><div class="part"><span class="num">2</span>Your gifts · 8–10 minutes</div></div>
+    <p class="fine">By tapping Get started, you confirm you're 18 or older. Your answers stay with our church team.</p></div>`;
+  if (s === "about") return `<div class="pbody"><h1>First, the basics.</h1>${field("f-name", "Name", "text", "First and last name", "name")}${field("f-email", "Email", "email", "you@email.com", "email")}${field("f-phone", "Phone", "tel", "(555) 555-5555", "phone")}</div>`;
+  if (s === "household") return `<div class="pbody"><h1>Your household</h1><div class="q"><div class="qt">Are you single or married?</div>${chips("married")}</div><div class="q"><div class="qt">Kids at home?</div>${chips("kids")}</div>${field("f-ages", "Kids' ages (optional)", "text", "e.g. 3, 7, 12", "kidsAges")}</div>`;
+  if (s === "faith") return `<div class="pbody"><h1>Your faith steps</h1><div class="q"><div class="qt">Have you put your faith in Jesus?</div>${chips("faith")}</div><div class="q"><div class="qt">Have you been baptized as a believer?</div>${chips("bapt")}</div><div class="q"><div class="qt">Are you in a group?</div>${chips("group")}</div></div>`;
+  if (s === "story") return `<div class="pbody"><h1>How you got here</h1><div class="q"><div class="qt">How did you first find ${esc(c.name)}?</div>${chips("found")}</div><div class="q"><div class="qt">Have you served at a church before?</div>${chips("served")}</div>${field("f-served", "Where, and on what team? (optional)", "text", "e.g. Kids at Grace Church", "servedWhere")}</div>`;
+  if (s === "skills") return `<div class="pbody"><h1>What are you good at?</h1><p class="sub">Tap all that apply. Work, hobbies, anything.</p>${chips("skills", true)}</div>`;
+  if (s === "passions") return `<div class="pbody"><h1>Who do you care about most?</h1><p class="sub">Tap all that tug at your heart.</p>${chips("passions", true)}</div>`;
+  if (s === "availability") return `<div class="pbody"><h1>When can you serve?</h1><div class="q"><div class="qt">Days</div>${chips("when")}</div><div class="q"><div class="qt">How often?</div>${chips("often")}</div></div>`;
+  if (s === "prayer") return `<div class="pbody"><h1>How can we pray for you?</h1><div><label class="fl" for="f-prayer">Prayer request (optional)</label><textarea class="in" id="f-prayer" rows="6" placeholder="Share as much or as little as you'd like." data-in="prayer">${esc(M.a.prayer || "")}</textarea></div><div class="row" style="gap:10px;align-items:flex-start;font-size:14px;color:var(--quiet)">${ICON.lock}<span>Seen by staff and the prayer team.</span></div></div>`;
+  if (s === "pause") return `<div class="pbody" style="padding-top:48px"><div class="check">${ICON.check(30, 2.4)}</div><h1 style="font-size:32px">Part 1 is done. Thank you!</h1><p class="lead">Set your phone down and listen in for a few minutes. Next, we'll discover how God has gifted you.</p><div class="card"><p class="verse">"Just as each one has received a gift, use it to serve others."</p><p class="ref">1 Peter 4:10</p></div></div>`;
+  if (s === "gifts") {
+    const p = PAIRS[M.q], swap = M.q % 2 === 1;
+    const A = swap ? [p[2], p[3]] : [p[0], p[1]], B = swap ? [p[0], p[1]] : [p[2], p[3]];
+    const chosen = M.picks[M.q];
+    return `<div class="pbody"><h1 style="font-size:26px">Which sounds more like you?</h1>
+      <button type="button" class="opt" aria-pressed="${chosen === A[1]}" data-act="pick" data-v="${A[1]}"><span class="badge">A</span><span>${esc(A[0])}</span></button>
+      <button type="button" class="opt" aria-pressed="${chosen === B[1]}" data-act="pick" data-v="${B[1]}"><span class="badge">B</span><span>${esc(B[0])}</span></button>
+      <p class="fine" style="font-size:14px">Go with your gut. Neither answer is wrong.</p></div>`;
+  }
+  if (s === "results") {
+    const r = results(M.a, M.picks, c.teams || []);
+    return `<div class="pbody"><h1>Here's how God has gifted you.</h1>
+      <div class="q"><div class="kick">Your top gifts</div>${r.top.map((g) => `<div class="gift"><div class="top"><b>${esc(g.name)}</b><span class="small">${g.score} of 6</span></div><div class="bar"><span style="width:${Math.round((g.score / 6) * 100)}%"></span></div><div class="small">${esc(g.verse)}</div></div>`).join("")}</div>
+      <div class="q"><div class="kick">Teams to talk about</div>${r.seasonFull ? `<p class="sub" style="font-size:14px">You said your season is full right now. No pressure. These are here for when it opens up.</p>` : ""}
+        ${r.teams.map((t) => `<div class="team"><b>${esc(t.name)}</b><span>${esc(t.reason)}</span>${t.check ? `<div class="flag">Background check needed</div>` : ""}</div>`).join("")}</div>
+      <div class="q"><div class="kick">Your next steps</div>${r.nextSteps.map((t) => `<div class="stepline">${ICON.circle}<span>${esc(t)}</span></div>`).join("")}</div>
+      <div class="note">Keep this screen open. A leader will sit down with you now and go over it in your one-on-one.</div></div>`;
+  }
+  if (s === "decide") return `<div class="pbody"><h1>One last step</h1><p class="sub">Are you ready to become a member of ${esc(c.name)}? Either answer is a good one.</p>
+    <button type="button" class="choice go" data-act="ready"><b>I'm ready to join</b><span>Next, you'll make our membership commitments.</span></button>
+    <button type="button" class="choice" data-act="notready"><b>I'm not ready to join yet</b><span>No pressure. We'll submit your answers and stay in touch.</span></button></div>`;
+  if (s === "commit") {
+    const list = c.commitments || [];
+    return `<div class="pbody" style="gap:14px"><h1>Our commitment</h1><p class="sub">Membership is a promise we make to each other. Check each one you're ready to make.</p>
+      ${list.map((x) => { const on = M.commits.includes(x.k); return `<div class="commit"><button type="button" class="crow" aria-pressed="${on}" data-act="commit" data-v="${esc(x.k)}"><span class="box">${ICON.check()}</span><span><span class="cw">${esc(x.word)}</span><span class="cs">${esc(x.statement)}</span><span class="cv">${esc(x.verse)}</span></span></button>${x.k === "belief" && (c.beliefs || []).length ? `<button type="button" class="textlink" data-act="sheet">Read what we believe</button>` : ""}</div>`; }).join("")}
+      ${allCommitted() ? "" : `<p class="sub" style="font-size:14px">Check each one to submit. Not ready on one? That's okay. Go back and choose "I'm not ready to join yet."</p>`}</div>`;
+  }
+  if (s === "sent") return `<div class="pbody center"><div class="check" style="width:72px;height:72px;background:var(--accent);color:#fff">${ICON.check(34, 2.4)}</div><h1 style="font-size:32px">Submitted!</h1><p class="lead">Your answers have been submitted. Someone from our team will reach out to you soon with your next steps.</p>${M.demo ? `<button class="btn quiet" data-act="demo-reset">Start the demo over</button>` : ""}</div>`;
+  return "";
+}
+const allCommitted = () => (M.church.commitments || []).every((x) => M.commits.includes(x.k));
+
+function renderMember() {
+  if (!M) return;
+  const s = stepName();
+  const inPart1 = M.i >= 1 && M.i <= PART1;
+  let pct = 0, plabel = "";
+  if (inPart1) { pct = Math.round((M.i / PART1) * 100); plabel = `Part 1 · ${M.i} of ${PART1}`; }
+  if (s === "gifts") { pct = Math.round(((M.q + 1) / PAIRS.length) * 100); plabel = `Part 2 · ${M.q + 1} of ${PAIRS.length}`; }
+  const top = s === "welcome" || s === "sent" ? "" : `<div class="ptop"><div class="prow">${s === "commit" || s === "decide" || M.i > 0 ? `<button class="round" aria-label="Back" data-act="back">${ICON.back}</button>` : `<span class="spacer"></span>`}${MARK}<span class="spacer"></span></div>
+    ${plabel ? `<div class="plabel">${plabel}</div><div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><span style="width:${pct}%"></span></div>` : ""}</div>`;
+  const labels = { welcome: "Get started", prayer: "Finish Part 1", pause: "Start Part 2", results: "Continue after my one-on-one", commit: "Submit" };
+  const showCta = !["gifts", "decide", "sent"].includes(s);
+  const locked = s === "commit" && !allCommitted();
+  const sheet = M.sheet ? `<div class="sheetwrap" data-act="sheet-close-bg"><div class="sheet" role="dialog" aria-modal="true" aria-label="What we believe"><div class="sheethead"><div><h2>What we believe</h2><div class="small">The short version</div></div><button class="round" aria-label="Close" data-act="sheet-close">${ICON.x}</button></div>
+    <div class="sheetbody">${(M.church.beliefs || []).map((b) => `<div class="belief"><span class="cw">${esc(b.word)}</span><p>${esc(b.text)}</p><span class="small">${esc(b.verse)}</span></div>`).join("")}<p class="sub" style="font-size:14px;margin-top:16px">Want the full statement? Ask your leader in your one-on-one.</p></div></div></div>` : "";
+  $("#app").innerHTML = `<div class="phone">${top}${screen()}${M.error ? `<div style="padding:0 24px"><div class="err" role="alert">${esc(M.error)}</div></div>` : ""}
+    ${showCta ? `<div class="pfoot"><button class="cta" data-act="next" aria-disabled="${locked || M.busy}">${M.busy ? "Saving…" : labels[s] || "Continue"}</button></div>` : ""}</div>${sheet}`;
+}
+
+async function memberAct(act, el) {
+  const s = stepName();
+  if (act === "single") { M.a[el.dataset.k] = el.dataset.v; return renderMember(); }
+  if (act === "multi") { const k = el.dataset.k, v = el.dataset.v, cur = M.a[k] || []; M.a[k] = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]; return renderMember(); }
+  if (act === "back") {
+    if (s === "gifts" && M.q > 0) { M.q--; return renderMember(); }
+    if (s === "commit") { M.i = STEPS.indexOf("decide"); return renderMember(); }
+    M.i = Math.max(0, M.i - 1); if (stepName() === "gifts") M.q = PAIRS.length - 1;
+    return renderMember();
+  }
+  if (act === "pick") {
+    M.picks[M.q] = el.dataset.v;
+    if (M.q >= PAIRS.length - 1) { M.i = STEPS.indexOf("results"); renderMember(); await persist(); return renderMember(); }
+    M.q++; renderMember();
+    if (M.q % 3 === 0) persist(); // save every few answers; the rest are kept in this page until then
+    return;
+  }
+  if (act === "next") {
+    if (M.busy) return;
+    if (s === "commit") { if (!allCommitted()) return; return doSubmit("joining"); }
+    if (s === "welcome") M.a.adult = true;
+    if (s === "about" && !(M.a.name || "").trim()) { M.error = "Add your name so our team knows who you are."; return renderMember(); }
+    M.i = Math.min(M.i + 1, STEPS.indexOf("decide"));
+    if (stepName() === "gifts") { M.q = 0; while (M.q < PAIRS.length - 1 && M.picks[M.q]) M.q++; }
+    M.busy = true; renderMember(); await persist(); M.busy = false; return renderMember();
+  }
+  if (act === "ready") { M.i = STEPS.indexOf("commit"); return renderMember(); }
+  if (act === "notready") return doSubmit("not_ready");
+  if (act === "commit") { const k = el.dataset.v; M.commits = M.commits.includes(k) ? M.commits.filter((x) => x !== k) : [...M.commits, k]; return renderMember(); }
+  if (act === "sheet") { M.sheet = true; return renderMember(); }
+  if (act === "sheet-close" || act === "sheet-close-bg") { M.sheet = false; return renderMember(); }
+  if (act === "demo-reset") { L.resetDemo(); return startMember("demo"); }
+}
+
+async function doSubmit(decision) {
+  M.busy = true; M.decision = decision; renderMember();
+  try {
+    await L.submit(M.key, M.a, M.picks, decision, decision === "joining" ? M.commits : []);
+    M.i = STEPS.indexOf("sent"); M.error = null;
+  } catch (e) { M.error = errMsg(e); }
+  M.busy = false; renderMember();
+}
+
+// ================= STAFF =================
+const V = { filter: "all", editGifts: null, inviteLink: null, signinSent: null };
+const P = () => L.state;
+const memberById = (id) => P().members.find((m) => m.id === id);
+const giftsOf = (m) => (m.gifts_override?.length ? m.gifts_override : m.top_gifts || []);
+const teamOf = (m) => m.team || (m.rec_teams || [])[0] || "";
+const statusOf = (m) => (m.status !== "submitted" ? ["In progress", "pill"] : m.decision === "joining" ? ["Joined", "pill ok"] : ["Not ready yet", "pill warn"]);
+const openSteps = () => P().steps.filter((s) => !s.done_at);
+const isLate = (s) => !s.done_at && s.due && s.due < today();
+
+function staffNav() {
+  const r = L.myRole();
+  const items = [];
+  if (["admin", "staff", "leader"].includes(r)) items.push(["home", "Today"], ["people", "People"], ["classes", "Classes"]);
+  if (["admin", "staff", "team_lead"].includes(r)) items.push(["handoff", r === "team_lead" ? "My team" : "Team handoff"]);
+  if (["admin", "staff", "prayer"].includes(r)) items.push(["prayer", "Prayer"]);
+  if (r === "admin") items.push(["settings", "Settings"]);
+  return items;
+}
+function staffHeader() {
+  const c = L.active();
+  if (!c) { $("#top").innerHTML = `<div class="shead"><div class="shead-in"><div class="who">${MARK}</div>${L.state.session ? `<button class="navb" data-act="signout">Sign out</button>` : ""}</div></div>`; return; }
+  setAccent(c.accent);
+  const cur = route.name === "person" ? "people" : route.name === "class" ? "classes" : route.name;
+  $("#top").innerHTML = `<div class="shead"><div class="shead-in"><div class="who">${logoBox(c)}<div><b>${esc(c.name)}</b>${MARK} <span class="small">· ${esc(ROLE_NAMES[L.myRole()] || "")}</span></div></div>
+    <nav class="snav" aria-label="Sections">${staffNav().map(([k, l]) => `<button class="navb" data-act="nav" data-to="${k}" ${cur === k ? 'aria-current="page"' : ""}>${l}</button>`).join("")}
+    ${P().churches.length > 1 ? `<select class="in" style="width:auto" data-act-change="church" aria-label="Church">${P().churches.map((x) => `<option value="${x.id}" ${x.id === c.id ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>` : ""}
+    <button class="navb" data-act="signout">Sign out</button></nav></div></div>`;
+}
+
+function render() {
+  $("#foot").innerHTML = "";
+  if (route.name === "invite") return renderInvite();
+  if (!L.LIVE) { $("#top").innerHTML = ""; $("#app").innerHTML = `<div class="signin"><div>${MARK}</div><h1>Not connected yet</h1><p class="sub">The database settings aren't in this build. You can still try the member flow on this device.</p><a class="btn" href="#/demo" style="text-align:center;text-decoration:none">Try the member flow</a></div>`; return; }
+  if (!P().session) return renderSignIn();
+  if (!P().loaded) { $("#app").innerHTML = `<div class="signin"><p class="sub">Loading…</p></div>`; return; }
+  if (P().error) { staffHeader(); $("#app").innerHTML = `<div class="signin"><div class="err">${esc(P().error)}</div><button class="btn" data-act="reload">Try again</button></div>`; return; }
+  if (!L.active()) return renderCreateChurch();
+  staffHeader();
+  const r = L.myRole();
+  let name = route.name;
+  const allowed = staffNav().map(([k]) => k).concat(["person", "class"]);
+  if (!allowed.includes(name)) name = staffNav()[0][0];
+  if ((name === "person" || name === "class") && !["admin", "staff", "leader"].includes(r)) name = staffNav()[0][0];
+  const views = { home: viewHome, people: viewPeople, person: viewPerson, classes: viewClasses, class: viewClass, handoff: viewHandoff, prayer: viewPrayer, settings: viewSettings };
+  $("#app").innerHTML = `<main class="smain">${views[name]()}</main>`;
+}
+
+function renderSignIn() {
+  $("#top").innerHTML = "";
+  $("#app").innerHTML = `<div class="signin"><div>${MARK}</div><h1>Staff sign in</h1>
+    ${V.signinSent ? `<p class="sub">Check <b>${esc(V.signinSent)}</b> for a sign-in link. You can close this tab.</p>` : `<p class="sub">We'll email you a link. No password needed.</p>
+    <form data-form="signin" class="q"><label class="fl" for="si-email">Email</label><input class="in" id="si-email" type="email" required autocomplete="email"><button class="btn" type="submit">Email me a link</button></form>`}
+    <p class="fine">Here for membership class? Scan the code on the screen instead.</p></div>`;
+}
+function renderCreateChurch() {
+  staffHeader();
+  $("#app").innerHTML = `<div class="signin"><h1>Set up your church</h1><p class="sub">You'll be its admin. You can add your logo, color and team next.</p>
+    <form data-form="church" class="q"><label class="fl" for="c-name">Church name</label><input class="in" id="c-name" required maxlength="120"><label class="fl" for="c-self">Your name</label><input class="in" id="c-self" maxlength="120"><button class="btn" type="submit">Create</button></form>
+    <p class="fine">Joining a church that's already set up? Open the invite link you were sent.</p></div>`;
+}
+async function renderInvite() {
+  $("#top").innerHTML = "";
+  if (!L.LIVE) { $("#app").innerHTML = `<div class="signin"><h1>Not connected</h1></div>`; return; }
+  let info = null; try { info = await L.inviteInfo(route.arg); } catch {}
+  if (!info) { $("#app").innerHTML = `<div class="signin"><h1>This invite has expired</h1><p class="sub">Ask your church admin for a new one.</p></div>`; return; }
+  if (!P().session) { $("#app").innerHTML = `<div class="signin"><div>${MARK}</div><h1>Join ${esc(info.church)}</h1><p class="sub">You've been invited as ${esc(ROLE_NAMES[info.role] || info.role)}${info.team ? ` for ${esc(info.team)}` : ""}. Sign in with <b>${esc(info.email)}</b> to accept.</p>
+    ${V.signinSent ? `<p class="sub">Check your email for a sign-in link.</p>` : `<form data-form="signin" data-back="#/invite/${esc(route.arg)}" class="q"><input class="in" id="si-email" type="email" value="${esc(info.email)}" required><button class="btn" type="submit">Email me a link</button></form>`}</div>`; return; }
+  $("#app").innerHTML = `<div class="signin"><div>${MARK}</div><h1>Join ${esc(info.church)}</h1><form data-form="accept" class="q"><label class="fl" for="ac-name">Your name</label><input class="in" id="ac-name" maxlength="120"><button class="btn" type="submit">Accept invite</button></form></div>`;
+}
+
+function stepRow(s, showWho = true) {
+  const m = memberById(s.member_id);
+  const owner = s.owner_user ? (P().team.find((t) => t.user_id === s.owner_user)?.name || P().team.find((t) => t.user_id === s.owner_user)?.email) : s.owner_label;
+  const canEdit = L.can("admin", "staff");
+  return `<div class="taskrow"><button class="tick" aria-pressed="${!!s.done_at}" aria-label="Done: ${esc(s.title)}" data-act="step-done" data-id="${s.id}" ${canEdit ? "" : "disabled"}>${ICON.check(14)}</button>
+    <div class="t"><b class="${s.done_at ? "done" : ""}">${esc(s.title)}</b><span class="small">${showWho && m ? `<button class="namebtn" style="min-height:0;font-size:13px" data-act="person" data-id="${m.id}">${esc(m.name || "No name")}</button> · ` : ""}${esc(owner || "No owner")}</span></div>
+    ${canEdit ? `<input type="date" class="in" style="width:auto;min-height:40px;padding:6px 8px;font-size:13px" value="${esc(s.due || "")}" data-act-change="step-due" data-id="${s.id}" aria-label="Due date">` : ""}
+    <span class="${isLate(s) ? "pill late" : "pill"}">${isLate(s) ? "Overdue · " : ""}${s.due ? fmt(s.due) : "No date"}</span></div>`;
+}
+
+function viewHome() {
+  const ms = P().members;
+  const sub = ms.filter((m) => m.status === "submitted");
+  const joined = sub.filter((m) => m.decision === "joining").length;
+  const open = openSteps();
+  const late = open.filter(isLate);
+  const latest = P().classes[0];
+  return `<div class="row"><div class="grow"><h1>Today</h1><p class="sub">${latest ? `Latest class: ${esc(latest.name)} · ${fmt(latest.class_date)}` : "No classes yet."}</p></div>${L.can("admin", "staff") ? `<button class="btn" data-act="nav" data-to="classes">New class</button>` : ""}</div>
+    <div class="tiles"><div class="tile"><span>Finished the class</span><b>${sub.length}</b></div><div class="tile"><span>Joined</span><b style="color:var(--accent)">${joined}</b></div><div class="tile"><span>Not ready yet</span><b>${sub.length - joined}</b></div><div class="tile dark"><span>Open next steps</span><b>${open.length}</b></div></div>
+    ${late.length ? `<section class="panel" style="border:2px solid var(--warm)"><h2>Needs attention</h2><p class="hint">Next steps past their due date.</p>${late.map((s) => stepRow(s)).join("")}</section>` : ""}
+    <section class="panel"><h2>Next steps checklist</h2><p class="hint">Every step has an owner and a due date.${L.can("admin", "staff") ? " Tap to check off." : ""}</p>${open.length ? open.map((s) => stepRow(s)).join("") : `<p class="sub">All caught up.</p>`}</section>`;
+}
+
+function viewPeople() {
+  const f = V.filter;
+  const list = P().members.filter((m) => f === "all" || (f === "joined" ? m.decision === "joining" : f === "notready" ? m.decision === "not_ready" : m.status !== "submitted"));
+  return `<div class="row"><h1 class="grow">People</h1><div class="filters">${[["all", "All"], ["joined", "Joined"], ["notready", "Not ready"], ["progress", "In progress"]].map(([k, l]) => `<button class="pillbtn" aria-pressed="${f === k}" data-act="filter" data-v="${k}">${l}</button>`).join("")}</div></div>
+    <section class="panel"><div class="tablewrap"><table><thead><tr><th>Name</th><th>Top gifts</th><th>Team</th><th>Can serve</th><th>Status</th></tr></thead><tbody>
+    ${list.map((m) => { const [st, cls] = statusOf(m); return `<tr><td><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "No name yet")}</button></td><td>${esc(giftsOf(m).map((g) => GIFTS[g]).join(", "))}</td><td>${esc(teamOf(m))}</td><td style="color:var(--quiet)">${esc(m.answers?.when || "")}</td><td><span class="${cls}">${st}</span></td></tr>`; }).join("") || `<tr><td colspan="5" style="color:var(--quiet)">No one here yet.</td></tr>`}
+    </tbody></table></div></section>`;
+}
+
+function viewPerson() {
+  const m = memberById(route.arg);
+  if (!m) return `<p class="sub">That person isn't here. <button class="namebtn" data-act="nav" data-to="people">Back to People</button></p>`;
+  if (!P().notes[m.id]) L.loadNotes(m.id).catch(() => {});
+  const [st, cls] = statusOf(m);
+  const a = m.answers || {};
+  const teams = L.active().settings?.teams || [];
+  const scores = m.scores || countGifts(m.picks || []);
+  const ranked = GIFT_KEYS.slice().sort((x, y) => (scores[y] || 0) - (scores[x] || 0));
+  const editable = L.can("admin", "staff", "leader") && m.status === "submitted";
+  const gifts = giftsOf(m);
+  const steps = P().steps.filter((s) => s.member_id === m.id);
+  const comm = Object.entries(m.commitments || {});
+  const commList = L.active().settings?.commitments || [];
+  const notes = P().notes[m.id] || [];
+  return `<div class="row"><button class="btn quiet" data-act="nav" data-to="people">← People</button><h1 class="grow">${esc(m.name || "No name yet")}</h1><span class="${cls}">${st}</span></div>
+  <div class="cols">
+    <section class="panel"><h2>Gifts</h2>
+      ${m.scores ? ranked.map((g) => `<div class="giftbar"><span>${GIFTS[g]}${gifts.includes(g) ? " ★" : ""}</span><span class="bar"><span style="width:${Math.round(((scores[g] || 0) / 6) * 100)}%"></span></span><b>${scores[g] || 0} of 6</b></div>`).join("") : `<p class="sub">Gifts show once they finish Part 2.</p>`}
+      ${m.gifts_override?.length ? `<p class="hint">★ Top gifts changed by a leader (assessment said ${esc((m.top_gifts || []).map((g) => GIFTS[g]).join(", "))}).</p>` : m.scores ? `<p class="hint">★ Top 3 from the assessment.</p>` : ""}
+      ${editable ? `<form data-form="gifts" data-id="${m.id}" class="q"><span class="fl">Leader adjustment</span><div class="inline">${[0, 1, 2].map((n) => `<select class="in" name="g${n}" aria-label="Gift ${n + 1}"><option value="">—</option>${GIFT_KEYS.map((g) => `<option value="${g}" ${gifts[n] === g ? "selected" : ""}>${GIFTS[g]}</option>`).join("")}</select>`).join("")}</div>
+        <div class="inline"><select class="in" name="team" aria-label="Team"><option value="">No team yet</option>${teams.map((t) => `<option ${teamOf(m) === t.name ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select><button class="btn" type="submit">Save</button></div>
+        <p class="hint">Recommended: ${esc((m.rec_teams || []).join(", ") || "none yet")}</p></form>` : ""}
+    </section>
+    <section class="panel"><h2>About</h2><dl class="kv">
+      <dt>Email</dt><dd>${esc(m.email || "")}</dd><dt>Phone</dt><dd>${esc(m.phone || "")}</dd>
+      <dt>Household</dt><dd>${esc([a.married, a.kids && a.kids !== "No kids" ? `${a.kids} kid${a.kids === "1" ? "" : "s"}${a.kidsAges ? ` (${a.kidsAges})` : ""}` : a.kids].filter(Boolean).join(" · "))}</dd>
+      <dt>Faith in Jesus</dt><dd>${esc(a.faith || "")}</dd><dt>Baptized</dt><dd>${esc(a.bapt || "")}</dd><dt>In a group</dt><dd>${esc(a.group || "")}</dd>
+      <dt>Found us</dt><dd>${esc(a.found || "")}</dd><dt>Served before</dt><dd>${esc([a.served, a.servedWhere].filter(Boolean).join(" · "))}</dd>
+      <dt>Skills</dt><dd>${esc((a.skills || []).join(", "))}</dd><dt>Passions</dt><dd>${esc((a.passions || []).join(", "))}</dd>
+      <dt>Can serve</dt><dd>${esc([a.when, a.often].filter(Boolean).join(" · "))}</dd>
+      <dt>Commitments</dt><dd>${comm.length ? `All ${comm.length} on ${fmt(comm[0][1])}` : m.decision === "not_ready" ? "Not ready to join yet" : "Not yet"}</dd></dl>
+      ${comm.length ? `<p class="hint">${esc(commList.filter((x) => m.commitments[x.k]).map((x) => x.word).join(" · "))}</p>` : ""}
+    </section>
+  </div>
+  <div class="cols">
+    <section class="panel"><h2>Next steps</h2>${steps.map((s) => stepRow(s, false)).join("") || `<p class="sub">None yet.</p>`}
+      ${L.can("admin", "staff") ? `<form data-form="step" data-id="${m.id}" class="inline"><input class="in" name="title" placeholder="Add a step" required maxlength="200"><input class="in" name="owner" placeholder="Owner" maxlength="80"><input class="in" type="date" name="due" style="flex:0 1 160px"><button class="btn" type="submit">Add</button></form>` : ""}</section>
+    <section class="panel"><h2>One-on-one notes</h2>${notes.map((n) => `<div class="prayer" style="flex:none"><p>${esc(n.body)}</p><span class="small">${esc(n.author_name || "")} · ${fmt(n.created_at)}</span></div>`).join("") || `<p class="sub">No notes yet.</p>`}
+      <form data-form="note" data-id="${m.id}" class="q"><label class="fl" for="n-body">Add a note</label><textarea class="in" id="n-body" name="body" required maxlength="4000" style="min-height:96px"></textarea><button class="btn" type="submit" style="align-self:flex-start">Save note</button></form></section>
+  </div>
+  ${L.can("admin") ? `<p class="fine"><button class="namebtn" style="color:var(--warm-ink)" data-act="delete-member" data-id="${m.id}">Delete this person's data</button> (only when they ask; this can't be undone)</p>` : ""}`;
+}
+
+function viewClasses() {
+  return `<div class="row"><h1 class="grow">Classes</h1></div>
+    ${L.can("admin", "staff") ? `<section class="panel"><h2>New class</h2><form data-form="class" class="inline"><input class="in" name="name" placeholder="e.g. Membership class · November" required maxlength="120"><input class="in" type="date" name="date" value="${today()}" style="flex:0 1 180px"><button class="btn" type="submit">Create</button></form></section>` : ""}
+    <section class="panel"><h2>All classes</h2>${P().classes.map((k) => { const n = P().members.filter((m) => m.class_id === k.id); return `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="class" data-id="${k.id}">${esc(k.name)}</button></b><span class="small">${fmt(k.class_date)} · ${n.filter((m) => m.status === "submitted").length} of ${n.length} finished</span></div><span class="${k.open ? "pill ok" : "pill"}">${k.open ? "Open" : "Closed"}</span></div>`; }).join("") || `<p class="sub">No classes yet.</p>`}</section>`;
+}
+
+function viewClass() {
+  const k = P().classes.find((x) => x.id === route.arg);
+  if (!k) return `<p class="sub">Class not found.</p>`;
+  const link = L.joinLink(k.join_code);
+  let img = "";
+  try { const qr = qrcode(0, "M"); qr.addData(link); qr.make(); img = qr.createDataURL(8, 2); } catch {}
+  const ms = P().members.filter((m) => m.class_id === k.id);
+  return `<div class="row"><button class="btn quiet" data-act="nav" data-to="classes">← Classes</button><h1 class="grow">${esc(k.name)}</h1><span class="${k.open ? "pill ok" : "pill"}">${k.open ? "Open" : "Closed"}</span></div>
+    <div class="cols"><section class="panel"><h2>Put this on the screen</h2><p class="hint">People scan it with their phone camera. No app to download.</p>
+      ${img ? `<img class="qr" src="${img}" alt="QR code for the class link">` : ""}<div class="code">${esc(link)}</div>
+      <div class="row"><button class="btn ghost" data-act="copy" data-v="${esc(link)}">Copy link</button>${L.can("admin", "staff") ? `<button class="btn quiet" data-act="class-open" data-id="${k.id}" data-v="${k.open ? "0" : "1"}">${k.open ? "Close the class" : "Reopen the class"}</button>` : ""}</div>
+      <p class="fine">Links stop taking new people 30 days after the class date, or when you close the class.</p></section>
+    <section class="panel wide"><h2>In this class</h2><p class="hint">Updates live as people finish.</p>
+      ${ms.map((m) => { const [st, cls] = statusOf(m); return `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "Just started")}</button></b><span class="small">${m.status === "submitted" ? esc(giftsOf(m).map((g) => GIFTS[g]).join(", ")) : `Step ${m.step} of ${STEPS.length - 1}`}</span></div><span class="${cls}">${st}</span></div>`; }).join("") || `<p class="sub">No one has scanned in yet.</p>`}</section></div>`;
+}
+
+function viewHandoff() {
+  const team = L.myRole() === "team_lead" ? P().staff.find((s) => s.church_id === P().activeId)?.team : null;
+  const list = P().handoff;
+  return `<div class="row"><h1 class="grow">${team ? `${esc(team)}: new people` : "Team handoff"}</h1></div><p class="sub">${team ? "People headed to your team. Reach out and set up their first Sunday." : "Everyone who joined, by the team they're headed to."}</p>
+    <div class="row" style="align-items:stretch">${list.map((h) => `<div class="prayer"><span class="kick" style="font-size:12px">${esc(h.team || "No team yet")}</span><b style="font-size:16px">${esc(h.name || "")}</b><span class="small">${esc((h.top_gifts || []).map((g) => GIFTS[g]).join(", "))}</span><span class="small">${esc([h.serve_when, h.often].filter(Boolean).join(" · "))}</span><span class="small">${esc([h.email, h.phone].filter(Boolean).join(" · "))}</span></div>`).join("") || `<p class="sub">No one yet.</p>`}</div>`;
+}
+
+function viewPrayer() {
+  return `<div class="row"><h1 class="grow">Prayer requests</h1><span class="row small" style="gap:6px">${ICON.lock}Staff and prayer team only</span></div>
+    <div class="row" style="align-items:stretch">${P().prayer.map((r) => `<div class="prayer"><p>${esc(r.body)}</p><span class="small">${esc(r.who || "")} · ${fmt(r.created_at)}</span><button class="btn ${r.prayed_at ? "quiet" : "ghost"}" style="align-self:flex-start" data-act="prayed" data-id="${r.id}" data-v="${r.prayed_at ? "0" : "1"}">${r.prayed_at ? "Prayed for ✓" : "Mark prayed for"}</button></div>`).join("") || `<p class="sub">No requests yet.</p>`}</div>`;
+}
+
+function viewSettings() {
+  const c = L.active();
+  const s = c.settings || {};
+  const beliefs = (s.beliefs || []).map((b) => [b.word, b.text, b.verse].join(" | ")).join("\n");
+  return `<h1>Settings</h1>
+  <div class="cols"><section class="panel"><h2>Your church</h2><form data-form="church-edit" class="q">
+    <label class="fl" for="s-name">Name</label><input class="in" id="s-name" name="name" value="${esc(c.name)}" required maxlength="120">
+    <label class="fl" for="s-logo">Logo link (https)</label><input class="in" id="s-logo" name="logo" value="${esc(c.logo_url || "")}" placeholder="https://…/logo.png">
+    <label class="fl" for="s-accent">Accent color</label><input class="in" id="s-accent" name="accent" type="color" value="${esc(hex(c.accent))}" style="width:96px;padding:4px">
+    <button class="btn" type="submit" style="align-self:flex-start">Save</button></form></section>
+  <section class="panel"><h2>What we believe</h2><p class="hint">Shown in the pop-up by the Belief commitment. One per line: <b>Word | Statement | Passage</b>.</p>
+    <form data-form="beliefs" class="q"><textarea class="in" name="beliefs" style="min-height:220px;font-size:14px">${esc(beliefs)}</textarea>
+    <div class="row"><button class="btn" type="submit">Save beliefs</button><button class="btn quiet" type="button" data-act="pinewood-beliefs">Fill with Pinewood's</button></div></form></section></div>
+  <div class="cols"><section class="panel"><h2>Team</h2>${P().team.map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.name || t.email)}</b><span class="small">${esc(ROLE_NAMES[t.role])}${t.team ? ` · ${esc(t.team)}` : ""} · ${esc(t.email || "")}</span></div>${t.user_id !== L.state.session.user.id ? `<button class="btn quiet" data-act="remove-staff" data-id="${t.user_id}">Remove</button>` : ""}</div>`).join("")}
+    <form data-form="invite" class="q"><span class="fl">Invite someone</span><div class="inline"><input class="in" name="email" type="email" placeholder="name@church.org" required>
+      <select class="in" name="role">${Object.entries(ROLE_NAMES).map(([k, v]) => `<option value="${k}" ${k === "staff" ? "selected" : ""}>${v}</option>`).join("")}</select>
+      <select class="in" name="team" aria-label="Team they lead (team leads only)"><option value="">Team (team leads)</option>${(s.teams || []).map((t) => `<option>${esc(t.name)}</option>`).join("")}</select></div><button class="btn" type="submit" style="align-self:flex-start">Create invite</button></form>
+    ${V.inviteLink ? `<div class="q"><span class="fl">Send them this link</span><div class="code">${esc(V.inviteLink)}</div><button class="btn ghost" style="align-self:flex-start" data-act="copy" data-v="${esc(V.inviteLink)}">Copy invite link</button></div>` : ""}
+    ${P().invites.length ? `<p class="hint">Waiting to accept: ${esc(P().invites.map((i) => i.email).join(", "))}</p>` : ""}
+    <p class="hint">Admin: everything. Staff: people, steps, notes, prayer. Interview leader: people and notes, no prayer. Team lead: only their team's new people. Prayer team: only prayer requests.</p></section>
+  <section class="panel"><h2>Teams and commitments</h2><p class="hint">Your teams, the gifts that point to each, and the commitments people make. Editing these comes in the next update.</p>
+    ${(s.teams || []).map((t) => `<div class="taskrow"><div class="t"><b>${esc(t.name)}</b><span class="small">${esc((t.gifts || []).map((g) => GIFTS[g]).join(", "))}${t.check ? " · background check" : ""}</span></div></div>`).join("")}
+    <p class="hint">${esc((s.commitments || []).map((x) => x.word).join(" · "))}</p></section></div>`;
+}
+
+// ---------------- events ----------------
+document.addEventListener("click", async (e) => {
+  const el = e.target.closest("[data-act]");
+  if (!el) return;
+  const act = el.dataset.act;
+  if (route.name === "member" && M) { if (act === "sheet-close-bg" && e.target !== el) return; return memberAct(act, el); }
+  try {
+    if (act === "nav") return go("#/s/" + el.dataset.to);
+    if (act === "person") return go("#/s/person/" + el.dataset.id);
+    if (act === "class") return go("#/s/class/" + el.dataset.id);
+    if (act === "filter") { V.filter = el.dataset.v; return render(); }
+    if (act === "signout") { await L.signOut(); return go("#/"); }
+    if (act === "reload") { await L.loadAll(); return render(); }
+    if (act === "copy") { try { await navigator.clipboard.writeText(el.dataset.v); toast("Copied"); } catch { toast("Press and hold the link to copy it"); } return; }
+    if (act === "step-done") { const s = P().steps.find((x) => x.id === el.dataset.id); await L.setStep(s.id, { done_at: s.done_at ? null : new Date().toISOString() }); return render(); }
+    if (act === "class-open") { await L.setClassOpen(el.dataset.id, el.dataset.v === "1"); return render(); }
+    if (act === "prayed") { await L.markPrayed(el.dataset.id, el.dataset.v === "1"); return render(); }
+    if (act === "remove-staff") { if (!confirmIt("Remove this person from your team?")) return; await L.setStaff(el.dataset.id, "remove"); return render(); }
+    if (act === "delete-member") { if (!confirmIt("Delete everything this person entered, plus their notes and steps? This can't be undone.")) return; await L.deleteMember(el.dataset.id); return go("#/s/people"); }
+    if (act === "pinewood-beliefs") { const t = $('textarea[name="beliefs"]'); if (t) t.value = PINEWOOD_BELIEFS.map((b) => [b.word, b.text, b.verse].join(" | ")).join("\n"); return; }
+  } catch (err) { toast(errMsg(err)); }
+});
+// A plain confirm keeps destructive actions deliberate (it is the only dialog in the app).
+const confirmIt = (msg) => window.confirm(msg);
+
+document.addEventListener("input", (e) => {
+  const el = e.target.closest("[data-in]");
+  if (el && M) M.a[el.dataset.in] = el.value;
+});
+document.addEventListener("change", async (e) => {
+  const el = e.target.closest("[data-act-change]");
+  if (!el) return;
+  try {
+    if (el.dataset.actChange === "church") { await L.switchChurch(el.value); return render(); }
+    if (el.dataset.actChange === "step-due") { await L.setStep(el.dataset.id, { due: el.value || null }); return render(); }
+  } catch (err) { toast(errMsg(err)); }
+});
+document.addEventListener("submit", async (e) => {
+  const f = e.target.closest("[data-form]");
+  if (!f) return;
+  e.preventDefault();
+  const v = (n) => (f.elements[n]?.value || "").trim();
+  const btn = f.querySelector('[type="submit"]'); if (btn) btn.disabled = true;
+  try {
+    const kind = f.dataset.form;
+    if (kind === "signin") { const email = $("#si-email", f).value.trim(); await L.sendMagicLink(email, f.dataset.back || ""); V.signinSent = email; }
+    if (kind === "church") { await L.createChurch($("#c-name").value.trim(), $("#c-self").value.trim()); go("#/s/settings"); }
+    if (kind === "accept") { await L.acceptInvite(route.arg, $("#ac-name").value.trim()); go("#/"); }
+    if (kind === "class") { const k = await L.createClass(v("name"), v("date") || today()); go("#/s/class/" + k.id); }
+    if (kind === "gifts") { const g = [v("g0"), v("g1"), v("g2")].filter(Boolean); await L.memberEdit(f.dataset.id, v("team"), [...new Set(g)]); toast("Saved"); }
+    if (kind === "note") { await L.addNote(f.dataset.id, v("body")); toast("Note saved"); }
+    if (kind === "step") { await L.addStep(f.dataset.id, v("title"), v("owner"), v("due")); }
+    if (kind === "church-edit") {
+      const logo = v("logo");
+      if (logo && !safeUrl(logo)) throw new Error("The logo link needs to start with https://");
+      await L.updateChurch({ name: v("name"), logo_url: logo || null, accent: hex(v("accent")) }); toast("Saved");
+    }
+    if (kind === "beliefs") {
+      const lines = v("beliefs").split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p[0] && p[1]);
+      const c = L.active();
+      await L.updateChurch({ settings: { ...(c.settings || {}), beliefs: lines.slice(0, 30).map(([word, text, verse]) => ({ word: word.slice(0, 40), text: text.slice(0, 400), verse: (verse || "").slice(0, 80) })) } });
+      toast("Beliefs saved");
+    }
+    if (kind === "invite") { const inv = await L.inviteStaff(v("email"), v("role"), v("team")); V.inviteLink = inv ? L.inviteLink(inv.token) : null; }
+  } catch (err) { toast(errMsg(err)); }
+  if (btn) btn.disabled = false;
+  if (route.name !== "member") render();
+});
+
+// ---------------- start ----------------
+L.onChange(() => { if (route.name !== "member" && route.name !== "join") render(); });
+(async () => {
+  route = parse();
+  if (route.name === "join" || route.name === "member") return onRoute();
+  render();
+  await L.initAuth();
+  render();
+})();
