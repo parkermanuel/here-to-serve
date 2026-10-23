@@ -275,7 +275,7 @@ function render() {
 function renderSignIn() {
   $("#top").innerHTML = "";
   const scan = N.NATIVE ? `<div class="card q"><h2 style="font-size:20px">In a membership class?</h2><p class="sub">Scan the code on the screen to start.</p><button class="cta" data-act="scan">Scan the class code</button></div>` : "";
-  $("#app").innerHTML = `<div class="signin"><div>${MARK}</div>${scan}<h1>Staff sign in</h1>
+  $("#app").innerHTML = `<div class="signin"><div>${MARK}</div>${scan}<h1>Staff sign in <span class="pill ok" style="vertical-align:middle">Beta</span></h1>
     ${V.signinSent ? `<p class="sub">Check <b>${esc(V.signinSent)}</b>. ${N.NATIVE ? "Type the 6-digit code from the email:" : "Tap the link in the email to sign in. You can close this tab."}</p>
       ${N.NATIVE ? `<form data-form="code" class="q"><input class="in" id="si-code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" required aria-label="Code from the email"><button class="btn" type="submit">Sign in</button></form>` : ""}
       <button class="namebtn" data-act="signin-again">Use a different email</button>`
@@ -513,11 +513,31 @@ function importPanel() {
   return `<section class="panel" id="import"><h2>Import team rosters</h2><p class="hint">A spreadsheet with one row per person per team: an <b>Email</b> or <b>Name</b> column (or First and Last name), and a <b>Team</b> column. Export it from any church software, or type it in Excel or Google Sheets and save as CSV.</p>${note}${body}</section>`;
 }
 
+// Owner, 23 Oct 2026: Beta pricing by church size, 30-day free trial, code BETA = a third off for life (until 5 Jan 2027).
+// Web only: the iPhone app doesn't link out to payment.
+const PLANS = [
+  ["Plant", "$15/month", "Under 2 years old or under 100 people", "https://buy.stripe.com/5kQ3cvaPq3yJ8RY3Il9R60e"],
+  ["Church", "$29/month", "100 to 499 people", "https://buy.stripe.com/7sY14n0aMc5ffgma6J9R60f"],
+  ["Large", "$59/month", "500 people or more", "https://buy.stripe.com/aFa14naPq1qBc4a4Mp9R60g"],
+];
+function planLink(base) {
+  const u = new URL(base), c = L.active(), email = P().session?.user?.email;
+  if (c) u.searchParams.set("client_reference_id", c.id);
+  if (email) u.searchParams.set("prefilled_email", email);
+  return u.toString();
+}
+function planPanel() {
+  if (N.NATIVE) return "";
+  return `<section class="panel"><h2>Your plan <span class="pill ok">Beta</span></h2>
+    <p class="hint">Every plan starts with a 30-day free trial. Cancel before day 30 and you're never charged. Beta churches: use code <b>BETA</b> at checkout for a third off, for life.</p>
+    ${PLANS.map(([name, price, who, url]) => `<div class="taskrow"><div class="t"><b>${name} · ${price}</b><span class="small">${who}</span></div><a class="btn ghost" href="${esc(planLink(url))}" target="_blank" rel="noopener">Start free trial</a></div>`).join("")}</section>`;
+}
 function viewSettings() {
   const c = L.active();
   const s = c.settings || {};
   const beliefs = (s.beliefs || []).map((b) => [b.word, b.text, b.verse].join(" | ")).join("\n");
   return `<h1>Settings</h1>
+  ${planPanel()}
   <div class="cols"><section class="panel"><h2>Your church</h2><form data-form="church-edit" class="q">
     <label class="fl" for="s-name">Name</label><input class="in" id="s-name" name="name" value="${esc(c.name)}" required maxlength="120">
     <label class="fl" for="s-logo">Logo link (https)</label><input class="in" id="s-logo" name="logo" value="${esc(c.logo_url || "")}" placeholder="https://…/logo.png">

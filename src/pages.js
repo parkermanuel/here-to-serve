@@ -28,7 +28,7 @@ export function privacyPage() {
 export function termsPage() {
   return `<h1>Terms</h1><p class="sub">Last updated ${UPDATED}</p>
   <section class="panel"><h2>Using Here To Serve</h2>
-    <p>Here To Serve is free for churches. Use it to welcome people, help them find where they fit, and follow up well. Don't use it to collect information for anything else, and don't enter information about people who haven't agreed to share it.</p></section>
+    <p>Here To Serve is a paid subscription for churches, priced by size, and every plan starts with a 30-day free trial you can cancel anytime. Use it to welcome people, help them find where they fit, and follow up well. Don't use it to collect information for anything else, and don't enter information about people who haven't agreed to share it.</p></section>
   <section class="panel"><h2>Churches</h2>
     <p>Each church is responsible for who it invites to its team, what access each person has, what it does with members' information, and answering members' requests to see or delete their information. Church content (logo, beliefs, teams) stays the church's.</p></section>
   <section class="panel"><h2>The gifts assessment</h2>
