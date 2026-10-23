@@ -41,6 +41,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Update the database
         if: env.SUPABASE_DB_URL != ''
+        # A database hiccup shouldn't stop the server functions from deploying; the run still shows a warning.
+        continue-on-error: true
         run: |
           sudo apt-get install -y -qq postgresql-client >/dev/null
           psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/setup.sql
