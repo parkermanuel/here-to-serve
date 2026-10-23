@@ -102,7 +102,9 @@ ok((await count(TL2, "members")) === 0, "a Team Lead not on the class sees no on
 ok(!!(await tryAs(null, `select public.hts_submit($1, $2, $3, 'joining', '[]')`, [key, answers, JSON.stringify(picks.slice(0, 10))])), "can't submit before all 33 gift questions");
 ok(!!(await tryAs(null, `select public.hts_submit($1, $2, $3, 'joining', '["faith"]')`, [key, answers, JSON.stringify(picks)])), "joining needs every commitment checked");
 const allK = JSON.stringify(DEFAULT_COMMITMENTS.map((c) => c.k));
-ok(/Baptism comes first/.test((await tryAs(null, `select public.hts_submit($1, $2, $3, 'joining', $4)`, [key, answers, JSON.stringify(picks), allK])) || ""), "someone not yet baptized can't choose to join; they're pointed to not ready yet");
+answers.faith = "Not sure";
+ok(/comes first/.test((await tryAs(null, `select public.hts_submit($1, $2, $3, 'joining', $4)`, [key, answers, JSON.stringify(picks), allK])) || ""), "someone not sure about faith can't choose to join; they're pointed to not ready yet");
+answers.faith = "Yes";
 answers.bapt = "Yes";
 ok((await one(null, `select public.hts_submit($1, $2, $3, 'joining', $4) r`, [key, answers, JSON.stringify(picks), allK])).r === true, "joining with all 8 commitments submits");
 const m = (await q(`select * from public.members where key=$1`, [key]))[0];

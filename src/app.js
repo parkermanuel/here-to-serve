@@ -1,7 +1,7 @@
 // Screens: the member phone flow (#/j/<code>, #/m/<key>, #/demo) and the staff dashboard (#/ and #/s/...).
 import qrcode from "qrcode-generator";
 import { GIFTS, GIFT_KEYS, VERSES, PAIRS, CHOICES, PINEWOOD_BELIEFS, ROLE_NAMES, DEFAULT_TEAMS, DEFAULT_JOIN_TERM, DEFAULT_HOST_SCRIPT, DEFAULT_GUIDE, lines } from "./bank.js";
-import { results, countGifts, cleanTeams, parseCommitments, canJoin, memberSteps } from "./engine.js";
+import { results, countGifts, cleanTeams, parseCommitments, canJoin, joinsAfterBaptism, AFTER_BAPTISM_FAITH, memberSteps } from "./engine.js";
 import * as L from "./live.js";
 import * as N from "./native.js";
 import { privacyPage, termsPage } from "./pages.js";
@@ -162,13 +162,13 @@ function screen() {
   if (s === "decide") return `<div class="pbody"><h1>One last step</h1><p class="sub">Are you ready to ${esc(joinTerm(c))} at ${esc(c.name)}? Either answer is a good one.</p>
     <button type="button" class="choice go" data-act="ready"><b>I'm ready to ${esc(joinTerm(c))}</b><span>Next, you'll make our commitments.</span></button>
     <button type="button" class="choice" data-act="notready"><b>I'm not ready yet</b><span>No pressure. We'll submit your answers and stay in touch.</span></button></div>`;
-  if (s === "baptismfirst") return `<div class="pbody"><h1>One step first</h1><p class="lead">To ${esc(joinTerm(c))}, we ask that you've trusted Jesus and been baptized as a believer. That's a great next step, and we'd love to walk with you into it.</p>
-    <button type="button" class="choice go" data-act="notready"><b>Submit as "not ready yet"</b><span>A pastor will reach out about following Jesus and baptism.</span></button>
+  if (s === "baptismfirst") return `<div class="pbody"><h1>One step first</h1><p class="lead">To ${esc(joinTerm(c))}, we ask that you've trusted Jesus first. That's the most important step there is, and we'd love to talk with you about it. That's a great next step, and we'd love to walk with you into it.</p>
+    <button type="button" class="choice go" data-act="notready"><b>Submit as "not ready yet"</b><span>A pastor will reach out to talk about following Jesus.</span></button>
     <button type="button" class="choice" data-act="fixfaith"><b>I answered that wrong</b><span>Go back to your faith steps and change your answer.</span></button></div>`;
   if (s === "commit") {
     const list = c.commitments || [];
     return `<div class="pbody" style="gap:14px"><h1>Our commitment</h1><p class="sub">This is a promise we make to each other. Check each one you're ready to make.</p>
-      ${list.map((x) => { const on = M.commits.includes(x.k); return `<div class="commit"><button type="button" class="crow" aria-pressed="${on}" data-act="commit" data-v="${esc(x.k)}"><span class="box">${ICON.check()}</span><span><span class="cw">${esc(x.word)}</span><span class="cs">${esc(x.statement)}</span><span class="cv">${esc(x.verse)}</span></span></button>${x.k === "belief" && (c.beliefs || []).length ? `<button type="button" class="textlink" data-act="sheet">Read what we believe</button>` : ""}</div>`; }).join("")}
+      ${list.map((x) => { const on = M.commits.includes(x.k); return `<div class="commit"><button type="button" class="crow" aria-pressed="${on}" data-act="commit" data-v="${esc(x.k)}"><span class="box">${ICON.check()}</span><span><span class="cw">${esc(x.word)}</span><span class="cs">${esc(x.k === "faith" && joinsAfterBaptism(M.a, c.requireBaptism !== false) ? AFTER_BAPTISM_FAITH : x.statement)}</span><span class="cv">${esc(x.verse)}</span></span></button>${x.k === "belief" && (c.beliefs || []).length ? `<button type="button" class="textlink" data-act="sheet">Read what we believe</button>` : ""}</div>`; }).join("")}
       ${allCommitted() ? "" : `<p class="sub" style="font-size:14px">Check each one to submit. Not ready on one? That's okay. Go back and choose "I'm not ready yet."</p>`}</div>`;
   }
   if (s === "sent") return sentScreen();
@@ -194,7 +194,7 @@ function sentScreen() {
   const c = M.church, x = myCopy();
   const joining = x.decision === "joining";
   return `<div class="pbody"><div class="center"><div class="check" style="width:72px;height:72px;background:var(--accent);color:#fff;margin:0 auto">${ICON.check(34, 2.4)}</div><h1 style="font-size:32px">Submitted!</h1>
-    <p class="lead">${joining ? `Thank you for saying yes. A pastor will confirm your next step after your one-on-one, and someone from our team will reach out soon.` : `Your answers are in. Someone from our team will reach out soon about your next steps.`}</p></div>
+    <p class="lead">${joining && joinsAfterBaptism(M.a, c.requireBaptism !== false) ? `Thank you for saying yes. Your next step is baptism, and a pastor will reach out soon to talk with you about it.` : joining ? `Thank you for saying yes. A pastor will confirm your next step after your one-on-one, and someone from our team will reach out soon.` : `Your answers are in. Someone from our team will reach out soon about your next steps.`}</p></div>
     <div class="card q"><div class="kick">Your top gifts</div><p style="margin:0"><b>${esc(x.gifts.join(" · "))}</b></p>
       <div class="kick">Teams to talk about</div><p style="margin:0">${esc(x.teams.join(" · "))}</p>
       ${x.commits.length ? `<div class="kick">Commitments you made</div><p style="margin:0">${esc(x.commits.map((k) => k.word).join(" · "))}</p>` : ""}
@@ -297,7 +297,7 @@ const giftsOf = (m) => (m.gifts_override?.length ? m.gifts_override : m.top_gift
 const teamOf = (m) => m.team || (m.rec_teams || [])[0] || "";
 // "Joined" only once a pastor approves after the one-on-one (owner, 23 Oct 2026)
 const statusOf = (m) => (m.status !== "submitted" ? ["In progress", "pill"] : m.decision !== "joining" ? ["Not ready yet", "pill warn"]
-  : m.approved_at ? ["Joined", "pill ok"] : m.held_at ? ["On hold", "pill late"] : ["Waiting for approval", "pill warn"]);
+  : m.approved_at ? ["Joined", "pill ok"] : m.held_at ? ["On hold", "pill late"] : (m.answers || {}).bapt !== "Yes" ? ["Joining after baptism", "pill warn"] : ["Waiting for approval", "pill warn"]);
 const waiting = () => P().members.filter((m) => m.status === "submitted" && m.decision === "joining" && !m.approved_at && !m.held_at);
 const faithFlag = (a = {}) => a.faith !== "Yes" || a.bapt !== "Yes";
 const churchSet = () => L.active()?.settings || {};
@@ -674,7 +674,7 @@ function viewSettings() {
   <section class="panel"><h2>Your words and your class</h2><form data-form="class-setup" class="q">
     <label class="fl" for="s-join">What do you call joining?</label><input class="in" id="s-join" name="joinTerm" maxlength="60" value="${esc(s.joinTerm || DEFAULT_JOIN_TERM)}" placeholder="join the serve team">
     <p class="hint" style="margin:0">People see "I'm ready to ${esc(s.joinTerm || DEFAULT_JOIN_TERM)}". For example: join the serve team, become a covenant member, become a member.</p>
-    <label class="small"><input type="checkbox" name="requireBaptism" ${s.requireBaptism !== false ? "checked" : ""}> Believer's baptism comes first (people who haven't been baptized choose "not ready yet")</label>
+    <label class="small"><input type="checkbox" name="requireBaptism" ${s.requireBaptism !== false ? "checked" : ""}> Believer's baptism comes first (people who've trusted Jesus but aren't baptized join after baptism)</label>
     <label class="fl" for="s-video">Lead pastor's video link (https)</label><input class="in" id="s-video" name="videoUrl" value="${esc(s.videoUrl || "")}" placeholder="https://youtube.com/…">
     <label class="fl" for="s-script">Host script</label><p class="hint" style="margin:0">One step per line: <b>Step | What to say or do</b>. {join} becomes your words above.</p><textarea class="in" id="s-script" name="hostScript" style="min-height:200px;font-size:14px">${esc(s.hostScript || DEFAULT_HOST_SCRIPT)}</textarea>
     <label class="fl" for="s-guide">One-on-one guide</label><p class="hint" style="margin:0">What leaders ask and listen for. One per line: <b>Heading | Text</b>.</p><textarea class="in" id="s-guide" name="guide" style="min-height:160px;font-size:14px">${esc(s.guide || DEFAULT_GUIDE)}</textarea>

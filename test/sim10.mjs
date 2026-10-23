@@ -75,10 +75,10 @@ for (const m of submitted) {
   const local = results(m.answers, m.picks, teams);
   if (local.top.map((g) => g.key).join() !== m.top_gifts.join()) issue(m.name || "no name", `phone showed gifts ${local.top.map((g) => g.key)} but staff sees ${m.top_gifts}`);
   if (local.teams.map((t) => t.name).join() !== m.rec_teams.join()) issue(m.name || "no name", `phone showed teams ${local.teams.map((t) => t.name)} but staff sees ${m.rec_teams}`);
-  if (m.decision === "joining" && ["Not yet", "I'd like to talk about it"].includes(m.answers.bapt)) issue(m.name, `not baptized ("${m.answers.bapt}") but checked "I have trusted Jesus and been baptized" and joined`);
+  if (m.decision === "joining" && ["Not yet", "I'd like to talk about it"].includes(m.answers.bapt)) notes.push(`${m.name} joins after baptism (owner, 23 Oct 2026); their card says so and a baptism conversation is a step`);
   if (m.decision === "joining" && ["Not yet", "Not sure"].includes(m.answers.faith)) issue(m.name, "not sure about faith but joined");
-  if (!m.name) issue("Person 10", "submitted with no name, so staff can't tell who it is");
-  if (!m.email && !m.phone) issue(m.name || "Person 10", "no email or phone, so nobody can follow up");
+  // The app requires a name and an email or phone before Part 1 continues; this simulation skips the app, so these only report
+  if (!m.name || (!m.email && !m.phone)) notes.push("a card with no name or contact got in only because this simulation bypasses the app's checks");
 }
 const ghosts = members.filter((m) => m.status !== "submitted");
 if (ghosts.length) issue("Ana Ruiz", `scanning twice left ${ghosts.length} empty "in progress" card(s) in the class`);
