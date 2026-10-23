@@ -211,11 +211,17 @@ async function memberAct(act, el) {
     if (s === "commit") { if (!allCommitted()) return; return doSubmit("joining"); }
     if (s === "welcome") M.a.adult = true;
     if (s === "about" && !(M.a.name || "").trim()) { M.error = "Add your name so our team knows who you are."; return renderMember(); }
+    // Simulation, 23 Oct 2026: with no email or phone nobody could follow up, so one of them is required
+    if (s === "about" && !(M.a.email || "").trim() && !(M.a.phone || "").trim()) { M.error = "Add an email or phone number so we can follow up with your next steps."; return renderMember(); }
     M.i = Math.min(M.i + 1, STEPS.indexOf("decide"));
     if (stepName() === "gifts") { M.q = 0; while (M.q < PAIRS.length - 1 && M.picks[M.q]) M.q++; }
     M.busy = true; renderMember(); await persist(); M.busy = false; return renderMember();
   }
-  if (act === "ready") { M.i = STEPS.indexOf("commit"); return renderMember(); }
+  if (act === "ready") {
+    if (!M.demo) { try { const r = await L.open(M.key); if (r?.church) M.church = r.church; } catch {} }
+    M.commits = M.commits.filter((k) => (M.church.commitments || []).some((x) => x.k === k));
+    M.i = STEPS.indexOf("commit"); return renderMember();
+  }
   if (act === "notready") return doSubmit("not_ready");
   if (act === "commit") { const k = el.dataset.v; M.commits = M.commits.includes(k) ? M.commits.filter((x) => x !== k) : [...M.commits, k]; return renderMember(); }
   if (act === "sheet") { M.sheet = true; return renderMember(); }
@@ -444,7 +450,8 @@ function viewClass() {
       <h2 style="margin-top:8px">One-on-one leaders</h2><p class="hint">Team Leads you add here can see and take notes on this class's people while the class is open.</p>
       ${P().team.filter((t) => t.role === "team_lead").map((t) => `<label class="taskrow" style="cursor:pointer"><input type="checkbox" data-act-change="class-leader" data-id="${k.id}" data-user="${t.user_id}" ${leaders.includes(t.user_id) ? "checked" : ""} style="width:22px;height:22px"><span class="t"><b>${esc(t.name || t.email)}</b><span class="small">Team Lead · ${esc((t.teams || []).join(", "))}</span></span></label>`).join("") || `<p class="sub">No Team Leads yet. An Administrator invites them in Settings.</p>`}</section>` : ""}
     <section class="panel ${core ? "wide" : ""}"><h2>In this class</h2><p class="hint">${core ? "Updates live as people finish." : "Tap a name for their card: add notes and adjust their gifts or team."}</p>
-      ${ms.map((m) => { const [st, cls] = statusOf(m); return `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "Just started")}</button></b><span class="small">${m.status === "submitted" ? esc(giftsOf(m).map((g) => GIFTS[g]).join(", ")) : `Step ${m.step} of ${STEPS.length - 1}`}</span></div><span class="${cls}">${st}</span></div>`; }).join("") || `<p class="sub">No one has scanned in yet.</p>`}</section></div>`;
+      ${(() => { const empty = ms.filter((m) => m.status !== "submitted" && !m.name).length; return empty ? `<p class="hint">${empty} ${empty === 1 ? "phone has" : "phones have"} opened the form without a name yet. If someone scanned twice on another phone, that extra one can be ignored.</p>` : ""; })()}
+      ${ms.filter((m) => m.status === "submitted" || m.name).map((m) => { const [st, cls] = statusOf(m); return `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "Just started")}</button></b><span class="small">${m.status === "submitted" ? esc(giftsOf(m).map((g) => GIFTS[g]).join(", ")) : `Step ${m.step} of ${STEPS.length - 1}`}</span></div><span class="${cls}">${st}</span></div>`; }).join("") || `<p class="sub">No one has scanned in yet.</p>`}</section></div>`;
 }
 
 function viewHandoff() {
