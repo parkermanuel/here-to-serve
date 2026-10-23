@@ -60,8 +60,9 @@ ok(CONNECTORS.breeze.label === "Breeze" && CONNECTORS.pco.label === "Planning Ce
   ok((await test(client(fake))).orgName === "Pinewood Church", "test connection reads the church's name");
 }
 
-const member = { name: "Daniel Brooks", email: "daniel@b.com", phone: "555-123-4567", top_gifts: ["sh", "te", "he"], rec_teams: ["Kids"], decision: "joining", submitted_at: "2026-10-23T15:00:00Z", commitments: { faith: "x" } };
+const member = { name: "Daniel Brooks", email: "daniel@b.com", phone: "555-123-4567", top_gifts: ["sh", "te", "he"], rec_teams: ["Kids"], decision: "joining", submitted_at: "2026-10-23T15:00:00Z", approved_at: "2026-10-24T15:00:00Z", commitments: { faith: "x" } };
 ok(wantedTags(member).join() === "Member,Gift: Shepherding,Gift: Teaching,Gift: Helps,Team: Kids", "tags: membership, top gifts and team");
+ok(!wantedTags({ ...member, approved_at: null }).includes("Member"), "no Member tag until a pastor approves");
 {
   const fake = fakeBreeze(); const c = client(fake);
   const ids = await ensureSetup(c, {});
@@ -70,7 +71,7 @@ ok(wantedTags(member).join() === "Member,Gift: Shepherding,Gift: Teaching,Gift: 
   const r1 = await pushMember(c, ids, member, [{ k: "faith", word: "Faith" }], {});
   ok(r1.personId === "11" && fake.db.people.length === 2, "found by email: no duplicate person");
   ok(tagNames(fake.db, "11").join() === "Gift: Helps,Gift: Shepherding,Gift: Teaching,Kids,Member,Team: Kids", "tags assigned in the Here To Serve folder");
-  ok(fake.db.notes.length === 1 && /joined on 2026-10-23.*Faith/.test(fake.db.notes[0].note), "a note with the decision and commitments");
+  ok(fake.db.notes.length === 1 && /2026-10-23.*Faith.*approved to join on 2026-10-24/.test(fake.db.notes[0].note), "a note with the decision and commitments");
   const r2 = await pushMember(c, ids, { ...member, ext_system: "breeze", ext_person_id: "11", team: "Security", gifts_override: ["le", "he"] }, [], r1.state);
   ok(tagNames(fake.db, "11").join() === "Gift: Helps,Gift: Leadership,Kids,Member,Team: Security", "a leader's change swaps only the tags that changed");
   ok(fake.db.notes.length === 1, "the note isn't repeated for the same decision");

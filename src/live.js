@@ -19,7 +19,7 @@ const store = {
 };
 
 // ================= Member side =================
-export const DEMO_CHURCH = { name: "Pinewood Church", logoUrl: null, accent: "#1E4D3A", teams: DEFAULT_TEAMS, commitments: DEFAULT_COMMITMENTS, beliefs: PINEWOOD_BELIEFS, className: "Membership class" };
+export const DEMO_CHURCH = { name: "Pinewood Church", logoUrl: null, accent: "#1E4D3A", teams: DEFAULT_TEAMS, commitments: DEFAULT_COMMITMENTS, beliefs: PINEWOOD_BELIEFS, className: "Growth Track", joinTerm: "join the serve team", requireBaptism: true };
 
 // Scan the class code. Returns the member key; the device remembers it per class so a refresh doesn't start over.
 export async function join(code) {
@@ -35,7 +35,7 @@ export async function join(code) {
 export async function open(key) {
   if (key === "demo" || !LIVE) {
     const saved = store.get("hts.demo") || {};
-    return { member: { status: saved.status || "started", step: saved.step || 0, answers: saved.answers || {}, picks: saved.picks || [], decision: saved.decision || null, adult: !!saved.adult, prayer: saved.prayer || "" }, church: DEMO_CHURCH, demo: true };
+    return { member: { status: saved.status || "started", step: saved.step || 0, answers: saved.answers || {}, picks: saved.picks || [], decision: saved.decision || null, adult: !!saved.adult, prayer: saved.prayer || "", commitments: saved.commitments || {} }, church: DEMO_CHURCH, demo: true };
   }
   const r = must(await sb.rpc("hts_open", { p_key: key }));
   return r;
@@ -62,7 +62,7 @@ export async function flushPending(key) {
 export const pending = (key) => !!store.get("hts.pending." + key);
 
 export async function submit(key, answers, picks, decision, commitments) {
-  if (key === "demo" || !LIVE) { store.set("hts.demo", { status: "submitted", decision }); return true; }
+  if (key === "demo" || !LIVE) { store.set("hts.demo", { ...(store.get("hts.demo") || {}), status: "submitted", decision, commitments: Object.fromEntries((commitments || []).map((k) => [k, new Date().toISOString()])) }); return true; }
   try {
     const ok = must(await sb.rpc("hts_submit", { p_key: key, p_answers: answers, p_picks: picks, p_decision: decision, p_commitments: commitments }));
     store.set("hts.pending." + key, null);
@@ -140,7 +140,7 @@ export async function loadChurch() {
     sb.from("staff").select("*").eq("church_id", cid).then(must).then((r) => (state.team = r)),
     sb.from("classes").select("*").eq("church_id", cid).order("class_date", { ascending: false }).then(must).then((r) => (state.classes = r)),
     sb.from("class_leaders").select("*").eq("church_id", cid).then(must).then((r) => (state.classLeaders = r)),
-    sb.from("members").select("id,class_id,status,step,name,email,phone,answers,scores,top_gifts,rec_teams,decision,commitments,team,gifts_override,first_sunday,ext_system,ext_person_id,ext_synced_at,submitted_at,created_at,updated_at").eq("church_id", cid).order("created_at", { ascending: false }).then(must).then((r) => (state.members = r)),
+    sb.from("members").select("id,class_id,status,step,name,email,phone,answers,scores,top_gifts,rec_teams,decision,commitments,team,gifts_override,first_sunday,approved_at,held_at,hold_note,interviewer,ext_system,ext_person_id,ext_synced_at,submitted_at,created_at,updated_at").eq("church_id", cid).order("created_at", { ascending: false }).then(must).then((r) => (state.members = r)),
     sb.from("next_steps").select("*").eq("church_id", cid).order("due", { ascending: true }).then(must).then((r) => (state.steps = r)),
     sb.rpc("hts_handoff", { p_church: cid }).then(must).then((r) => (state.handoff = r || [])),
   ];
@@ -199,6 +199,10 @@ export async function addStep(memberId, title, ownerUser, due) {
   must(await sb.from("next_steps").insert({ church_id: state.activeId, member_id: memberId, kind: "custom", title, owner_user: ownerUser || null, due: due || null }));
   await refresh();
 }
+// A pastor approves someone joining after their one-on-one, or puts it on hold with a private note
+export async function approve(memberId, ok, note) { must(await sb.rpc("hts_approve", { p_member: memberId, p_ok: ok, p_note: note || null })); await refresh(); }
+// The host pairs each person with a one-on-one leader
+export async function setInterviewer(memberId, userId) { must(await sb.rpc("hts_set_interviewer", { p_member: memberId, p_user: userId || null })); await refresh(); }
 export async function setFirstSunday(memberId, date) { must(await sb.rpc("hts_set_first_sunday", { p_member: memberId, p_date: date || null })); await refresh(); }
 export async function markPrayed(id, on) { must(await sb.from("prayer_requests").update({ prayed_at: on ? new Date().toISOString() : null }).eq("id", id)); await refresh(); }
 export async function deleteMember(id) { must(await sb.from("members").delete().eq("id", id)); await refresh(); }

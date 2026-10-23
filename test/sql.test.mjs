@@ -102,6 +102,8 @@ ok((await count(TL2, "members")) === 0, "a Team Lead not on the class sees no on
 ok(!!(await tryAs(null, `select public.hts_submit($1, $2, $3, 'joining', '[]')`, [key, answers, JSON.stringify(picks.slice(0, 10))])), "can't submit before all 33 gift questions");
 ok(!!(await tryAs(null, `select public.hts_submit($1, $2, $3, 'joining', '["faith"]')`, [key, answers, JSON.stringify(picks)])), "joining needs every commitment checked");
 const allK = JSON.stringify(DEFAULT_COMMITMENTS.map((c) => c.k));
+ok(/Baptism comes first/.test((await tryAs(null, `select public.hts_submit($1, $2, $3, 'joining', $4)`, [key, answers, JSON.stringify(picks), allK])) || ""), "someone not yet baptized can't choose to join; they're pointed to not ready yet");
+answers.bapt = "Yes";
 ok((await one(null, `select public.hts_submit($1, $2, $3, 'joining', $4) r`, [key, answers, JSON.stringify(picks), allK])).r === true, "joining with all 8 commitments submits");
 const m = (await q(`select * from public.members where key=$1`, [key]))[0];
 ok(Object.keys(m.commitments).length === 8 && m.decision === "joining" && m.status === "submitted", "commitments saved with a time each");
@@ -115,7 +117,19 @@ ok(m.top_gifts.join() === topGifts(sc, answers.passions).map((g) => g.key).join(
 ok(m.rec_teams.join() === recommendTeams(sc, [...answers.passions, ...answers.skills], DEFAULT_TEAMS).map((t) => t.name).join(), "server's team matches agree with the app's");
 const steps = await q(`select kind from public.next_steps where member_id=$1 order by created_at, kind`, [m.id]);
 const want = staffSteps(answers, "joining", m.rec_teams, DEFAULT_TEAMS).map((s) => s.kind).sort();
-ok(JSON.stringify(steps.map((s) => s.kind).sort()) === JSON.stringify(want) && want.includes("baptism") && want.includes("check"), "next steps created on submit, matching the app (baptism, background check, team, group)");
+ok(JSON.stringify(steps.map((s) => s.kind).sort()) === JSON.stringify(want) && want.join() === "approve,group", "on submit: approval and a group, matching the app; no team steps until approved");
+opened = (await one(null, `select public.hts_open($1) o`, [key])).o;
+ok(opened.member.topGifts.length === 3 && opened.member.recTeams.length === 2 && Object.keys(opened.member.commitments).length === 8 && opened.member.approved === false, "after submitting, their link shows their own gifts, teams and commitments");
+ok((await as(TL, () => q(`select * from public.hts_handoff($1)`, [cid]))).length === 0, "nobody is handed to a team before a pastor approves");
+ok(!!(await tryAs(TL, `select public.hts_approve($1, true)`, [m.id])), "a Team Lead can't approve someone joining");
+await as(ADMIN, () => q(`update public.churches set settings = settings || jsonb_build_object('stepOwners', jsonb_build_object('check', $2::text, 'approve', $2::text)) where id = $1`, [cid, STAFF]));
+await as(STAFF, () => q(`select public.hts_approve($1, false, 'Wants to talk about baptism first')`, [m.id]));
+let mm = (await q(`select held_at, approved_at, hold_note from public.members where id=$1`, [m.id]))[0];
+ok(mm.held_at && !mm.approved_at && mm.hold_note === "Wants to talk about baptism first" && (await q(`select owner_user from public.next_steps where member_id=$1 and kind='hold' and done_at is null`, [m.id]))[0].owner_user === STAFF, "a pastor can put joining on hold with a private note and a follow-up step");
+await as(STAFF, () => q(`select public.hts_approve($1, true)`, [m.id]));
+const st2 = await q(`select kind, owner_user, done_at from public.next_steps where member_id=$1`, [m.id]);
+ok(st2.find((x) => x.kind === "check" && !x.done_at)?.owner_user === STAFF && st2.find((x) => x.kind === "team" && !x.done_at)?.owner_user === TL && st2.every((x) => !["approve", "hold"].includes(x.kind) || x.done_at), "approving creates the background check (owned by the person picked in Settings) and the intro (owned by the Kids lead)");
+ok((await q(`select count(*)::int n from public.notify_queue where member_id=$1 and kind='handoff'`, [m.id]))[0].n === 1, "approving tells the team lead's phone");
 ok((await one(null, `select public.hts_save($1, '{}', '[]', 1) r`, [key])).r === false, "a submitted form can't be changed from the link");
 opened = (await one(null, `select public.hts_open($1) o`, [key])).o;
 ok(opened.member.prayer === null, "after submitting, the link no longer shows the prayer request");
@@ -127,7 +141,13 @@ ok(!!(await tryAs(null, `select public.hts_submit($1, $2, $3, 'not_ready', '[]')
 await one(null, `select public.hts_save($1, $2, '[]', 1)`, [j2.key, { ...a2, adult: true }]);
 ok((await one(null, `select public.hts_submit($1, $2, $3, 'not_ready', '[]') r`, [j2.key, a2, JSON.stringify(PAIRS.map((p) => p[3]))])).r === true, "not ready to join submits without commitments");
 const m2 = (await q(`select id, commitments from public.members where key=$1`, [j2.key]))[0];
-ok(Object.keys(m2.commitments).length === 0 && (await q(`select count(*)::int n from public.next_steps where member_id=$1 and kind='followup'`, [m2.id]))[0].n === 1, "not ready gets a follow-up step and no commitments");
+ok(Object.keys(m2.commitments).length === 0 && (await q(`select count(*)::int n from public.next_steps where member_id=$1 and kind in ('followup', 'invite')`, [m2.id]))[0].n === 2, "not ready gets a follow-up, an invite to the next class, and no commitments");
+ok(!!(await tryAs(STAFF, `select public.hts_approve($1, true)`, [m2.id])), "only people who chose to join can be approved");
+await as(STAFF, () => q(`select public.hts_set_interviewer($1, $2)`, [m2.id, PRAYTL]));
+ok((await q(`select interviewer from public.members where id=$1`, [m2.id]))[0].interviewer === PRAYTL && (await count(PRAYTL, "members")) >= 1, "the host pairs someone with a one-on-one leader, who can then see that class");
+ok(!!(await tryAs(TL, `select public.hts_set_interviewer($1, $2)`, [m2.id, TL])), "Team Leads can't make pairings");
+await as(STAFF, () => q(`select public.hts_set_interviewer($1, null)`, [m2.id]));
+await as(STAFF, () => q(`select public.hts_set_class_leader($1, $2, false)`, [klass.id, PRAYTL]));
 
 // Who sees what, level by level
 ok((await count(ADMIN, "members")) === 2 && (await count(STAFF, "members")) === 2, "Administrator and Staff see everyone");
@@ -148,6 +168,9 @@ ok(hk.length === 1 && hk[0].name === "Daniel Brooks" && hk[0].team === "Kids" &&
 ok((await as(TL2, () => q(`select * from public.hts_handoff($1)`, [cid]))).length === 0, "the Youth and Worship lead doesn't see Kids people");
 ok((await as(STAFF, () => q(`select * from public.hts_handoff($1)`, [cid]))).length === 1, "Staff see every team's handoff");
 ok((await as(OTHER, () => q(`select * from public.hts_handoff($1)`, [cid]))).length === 0, "another church's lead sees no handoffs here");
+ok((await as(TL, () => q(`select * from public.hts_handoff($1)`, [cid])))[0].check_pending === true, "the Kids lead sees the background check is still pending");
+ok(/background check/.test((await tryAs(TL, `select public.hts_set_first_sunday($1, '2026-11-01')`, [m.id])) || ""), "no first Sunday on a background-check team until the check is done");
+await as(STAFF, () => q(`update public.next_steps set done_at = now() where member_id=$1 and kind='check'`, [m.id]));
 ok(!(await tryAs(TL, `select public.hts_set_first_sunday($1, '2026-11-01')`, [m.id])), "the Kids lead schedules Daniel's first Sunday");
 ok((await q(`select done_at from public.next_steps where member_id=$1 and kind='team'`, [m.id]))[0].done_at !== null, "scheduling a first Sunday checks off the team intro");
 ok(!!(await tryAs(TL2, `select public.hts_set_first_sunday($1, '2026-11-01')`, [m.id])), "another team's lead can't schedule him");
@@ -157,6 +180,10 @@ ok(snap.people === 1 && snap.gifts.sh === 1 && snap.teams.find((t) => t.name ===
 
 // Interview mode edits and notes
 ok(!(await tryAs(TL, `select public.hts_member_edit($1, 'Kids', array['sh','te'])`, [m.id])), "the class's interviewing Team Lead adjusts gifts and team");
+await as(STAFF, () => q(`select public.hts_member_edit($1, 'Youth', null)`, [m.id]));
+const yst = await q(`select title, owner_user from public.next_steps where member_id=$1 and kind='team' and done_at is null`, [m.id]);
+ok(yst.length === 1 && yst[0].title === "Introduce to the Youth team lead" && yst[0].owner_user === TL2 && (await q(`select count(*)::int n from public.next_steps where member_id=$1 and kind='check' and done_at is null`, [m.id]))[0].n === 0, "changing the team redoes the intro for the new team's lead, and a finished background check still counts");
+await as(STAFF, () => q(`select public.hts_member_edit($1, 'Kids', array['sh','te'])`, [m.id]));
 ok(!!(await tryAs(TL2, `select public.hts_member_edit($1, 'Youth', null)`, [m.id])), "a Team Lead not on the class can't");
 ok(!!(await tryAs(STAFF, `select public.hts_member_edit($1, 'Choir', null)`, [m.id])), "a team that isn't on the list is refused");
 ok(!!(await tryAs(OTHER, `select public.hts_add_note($1, 'x')`, [m.id])), "another church can't add notes");
@@ -165,13 +192,13 @@ ok((await count(STAFF, "notes")) === 1 && (await count(TL, "notes")) === 1 && (a
 ok(!!(await tryAs(ADMIN, `update public.members set answers='{"x":1}' where id=$1`, [m.id])) || (await q(`select answers from public.members where id=$1`, [m.id]))[0].answers.x === undefined, "nobody edits a member's answers directly");
 
 // Next steps checklist
-const st = (await q(`select id from public.next_steps where member_id=$1 and kind='baptism'`, [m.id]))[0].id;
+const st = (await q(`select id from public.next_steps where member_id=$1 and kind='group'`, [m.id]))[0].id;
 ok(!(await tryAs(STAFF, `update public.next_steps set owner_user=$2 where id=$1`, [st, TL])), "Staff assign a step to a Team Lead");
 ok(!!(await tryAs(STAFF, `update public.next_steps set owner_user=$2 where id=$1`, [st, OTHER])), "a step's owner must be on the team");
 ok((await count(TL2, "next_steps")) === 0 && (await as(TL, () => q(`select count(*)::int n from public.next_steps where id=$1`, [st])))[0].n === 1, "a Team Lead sees the steps assigned to them");
 ok(!(await tryAs(TL, `update public.next_steps set done_at=now() where id=$1`, [st])), "a Team Lead marks their own step done");
 ok(!!(await tryAs(TL, `update public.next_steps set due='2030-01-01' where id=$1`, [st])), "but can't change its date or owner");
-const other = (await q(`select id from public.next_steps where member_id=$1 and kind='group'`, [m.id]))[0].id;
+const other = (await as(STAFF, () => q(`insert into public.next_steps(church_id, member_id, kind, title) values ($1, $2, 'custom', 'Coffee with Daniel') returning id`, [cid, m.id])))[0].id;
 await tryAs(TL, `update public.next_steps set done_at=now() where id=$1`, [other]);
 ok((await q(`select done_at from public.next_steps where id=$1`, [other]))[0].done_at === null, "or touch steps that aren't theirs");
 ok(!!(await tryAs(OTHER, `insert into public.next_steps(church_id, member_id, kind, title) values ($1, $2, 'x', 'x')`, [oid, m.id])), "a step can't point at another church's person");
@@ -179,7 +206,7 @@ ok(!(await tryAs(PRAYTL, `update public.prayer_requests set prayed_at=now()`)), 
 ok(!!(await tryAs(PRAYTL, `update public.prayer_requests set body='changed'`)), "nobody rewrites a prayer request");
 ok((await q(`select public.hts_queue_overdue() n`))[0].n === 0, "nothing overdue yet");
 await q(`update public.next_steps set due = current_date - 1 where member_id=$1 and done_at is null`, [m2.id]);
-ok((await q(`select public.hts_queue_overdue() n`))[0].n === 1 && (await q(`select public.hts_queue_overdue() n`))[0].n === 0, "an overdue step notifies once");
+ok((await q(`select public.hts_queue_overdue() n`))[0].n === 2 && (await q(`select public.hts_queue_overdue() n`))[0].n === 0, "each overdue step notifies once");
 ok(!!(await tryAs(STAFF, `select public.hts_queue_overdue()`)), "only the server runs the overdue check");
 
 // Settings: Administrators only
@@ -191,7 +218,7 @@ ok(!!(await tryAs(ADMIN, `update public.classes set join_code='abc' where church
 // Spreadsheets: export (Administrator and Staff) and roster import (Administrator)
 const exp = await as(STAFF, () => q(`select * from public.hts_export_people($1)`, [cid]));
 const dan = exp.find((r) => r.email === "daniel@b.com");
-ok(exp.length === 2 && dan.first_name === "Daniel" && dan.last_name === "Brooks" && dan.membership_status === "Member" && dan.gift_1 && Number.isInteger(dan.gift_1_score) && /Connect to a group/.test(dan.open_next_steps || "") && !/Baptism/.test(dan.open_next_steps || ""), "Staff export people with names split, status, gifts with scores and open steps");
+ok(exp.length === 2 && dan.first_name === "Daniel" && dan.last_name === "Brooks" && dan.membership_status === "Joined" && dan.gift_1 && Number.isInteger(dan.gift_1_score) && /Coffee with Daniel/.test(dan.open_next_steps || "") && !/Baptism/.test(dan.open_next_steps || ""), "Staff export people with names split, status, gifts with scores and open steps");
 ok(!("prayer" in dan) && !Object.values(dan).some((v) => String(v).includes("Wisdom for a new job")), "exports never include prayer requests");
 ok((await as(ADMIN, () => q(`select * from public.hts_export_people($1, 'not_ready')`, [cid]))).length === 1, "export filtered to not ready");
 ok((await as(ADMIN, () => q(`select * from public.hts_export_people($1, 'all', $2)`, [cid, klass.id]))).length === 2, "export filtered to one class");

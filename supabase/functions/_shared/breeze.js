@@ -128,11 +128,14 @@ async function tagId(client, ids, name) {
   return ids.tags[name];
 }
 
+// Where someone is: "joined" only once a pastor approves, "pending" while waiting or on hold
+export const stage = (m) => (m.decision === "joining" ? (m.approved_at ? "joined" : "pending") : m.decision === "not_ready" ? "not_ready" : null);
+
 export function wantedTags(m) {
   const gifts = (m.gifts_override?.length ? m.gifts_override : m.top_gifts || []).map((g) => GIFT_NAMES[g] || g);
   const team = m.team || (m.rec_teams || [])[0];
   return [
-    ...(m.decision === "joining" ? [TAG.member] : m.decision === "not_ready" ? [TAG.notReady] : []),
+    ...(stage(m) === "joined" ? [TAG.member] : stage(m) === "not_ready" ? [TAG.notReady] : []),
     ...gifts.map(TAG.gift),
     ...(team ? [TAG.team(team)] : []),
   ];
@@ -140,7 +143,7 @@ export function wantedTags(m) {
 
 export function noteText(m, commitments = []) {
   const date = String(m.submitted_at || "").slice(0, 10);
-  if (m.decision === "joining") return `Here To Serve: joined on ${date} and made the membership commitments (${commitments.filter((c) => m.commitments?.[c.k]).map((c) => c.word).join(", ")}).`;
+  if (stage(m) === "joined") return `Here To Serve: took the class on ${date}, made the commitments (${commitments.filter((c) => m.commitments?.[c.k]).map((c) => c.word).join(", ")}) and was approved to join on ${String(m.approved_at || "").slice(0, 10)}.`;
   return `Here To Serve: finished membership class on ${date} and isn't ready to join yet.`;
 }
 
@@ -158,8 +161,9 @@ export async function pushMember(client, ids, m, commitments, state = {}) {
   for (const t of want) if (!prev.includes(t)) await client.get(PATH.assign(personId, await tagId(client, ids, t)));
   for (const t of prev) if (!want.includes(t) && ids.tags[t]) await client.get(PATH.unassign(personId, ids.tags[t]));
   let noted = state.noted || null, noteError = null;
-  if (m.decision && noted !== m.decision) {
-    try { await client.get(PATH.addNote(personId, noteText(m, commitments))); noted = m.decision; }
+  const st = stage(m);
+  if ((st === "joined" || st === "not_ready") && noted !== st) {
+    try { await client.get(PATH.addNote(personId, noteText(m, commitments))); noted = st; }
     catch (e) { noteError = e.message; }  // see the CONFIRM note on addNote
   }
   return { personId, state: { tags: want, noted }, noteError };

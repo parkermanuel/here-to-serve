@@ -55,22 +55,31 @@ export function memberSteps(answers = {}, seasonFull = answers.when === SEASON_F
   return s;
 }
 
-// The staff tasks the server creates on submit (mirrors hts_make_steps in setup.sql; tested to agree).
-export function staffSteps(answers = {}, decision, recTeams = [], teams = []) {
+// The staff tasks the server creates (mirrors hts_make_steps and hts_team_steps in setup.sql; tested to agree).
+// Someone who chose to join waits for a pastor's approval after the one-on-one; the background check and team
+// introduction come only once they're approved (owner, 23 Oct 2026).
+export function staffSteps(answers = {}, decision, recTeams = [], teams = [], approved = false) {
   const out = [];
   const add = (kind, title, owner, days) => out.push({ kind, title, owner, days });
+  const unsure = answers.faith !== "Yes" || answers.bapt !== "Yes";
+  if (decision === "joining") add("approve", "Approve joining after the one-on-one" + (unsure ? " (check faith and baptism)" : ""), "Lead pastor", 3);
   if (answers.faith === "Not yet" || answers.faith === "Not sure") add("faith", "Talk about following Jesus", "Next steps pastor", 3);
   if (answers.bapt === "Not yet" || answers.bapt === "I'd like to talk about it") add("baptism", "Baptism conversation", "Next steps pastor", 3);
+  if (answers.group !== "Yes") add("group", "Connect to a group", "Groups pastor", 7);
+  if (decision === "not_ready") { add("followup", "Follow up: not ready yet", "Next steps pastor", 7); add("invite", "Invite to the next class", "Next steps pastor", 30); }
   const seasonFull = answers.when === SEASON_FULL;
+  if (seasonFull) add("season", "Check back in when their season opens up", "Next steps pastor", 60);
   const first = recTeams[0];
   const team = teams.find((t) => t.name === first);
-  if (first && !seasonFull && decision === "joining" && team?.check) add("check", `Background check for ${first}`, "Next steps pastor", 5);
-  if (first && !seasonFull && decision === "joining") add("team", `Introduce to the ${first} team lead`, `${first} lead`, 5);
-  if (answers.group !== "Yes") add("group", "Connect to a group", "Groups pastor", 7);
-  if (decision === "not_ready") add("followup", "Follow up: not ready to join", "Next steps pastor", 7);
-  if (seasonFull) add("season", "Check back in when their season opens up", "Next steps pastor", 60);
+  if (first && !seasonFull && decision === "joining" && approved) {
+    if (team?.check) add("check", `Background check for ${first}`, "Next steps pastor", 5);
+    add("team", `Introduce to the ${first} team lead`, `${first} lead`, 7);
+  }
   return out;
 }
+
+// Baptism comes first: a church that requires it won't take "I'm ready to join" until faith and baptism are both Yes
+export const canJoin = (answers = {}, requireBaptism = true) => !requireBaptism || (answers.faith === "Yes" && answers.bapt === "Yes");
 
 // ---------- Church settings editing (owner, 23 Oct 2026: teams and commitments are each church's own; questions and gifts stay fixed) ----------
 const clip = (s, n) => String(s ?? "").trim().slice(0, n);

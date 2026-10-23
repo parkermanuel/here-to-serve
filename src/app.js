@@ -1,7 +1,7 @@
 // Screens: the member phone flow (#/j/<code>, #/m/<key>, #/demo) and the staff dashboard (#/ and #/s/...).
 import qrcode from "qrcode-generator";
-import { GIFTS, GIFT_KEYS, VERSES, PAIRS, CHOICES, PINEWOOD_BELIEFS, ROLE_NAMES, DEFAULT_TEAMS } from "./bank.js";
-import { results, countGifts, cleanTeams, parseCommitments } from "./engine.js";
+import { GIFTS, GIFT_KEYS, VERSES, PAIRS, CHOICES, PINEWOOD_BELIEFS, ROLE_NAMES, DEFAULT_TEAMS, DEFAULT_JOIN_TERM, DEFAULT_HOST_SCRIPT, DEFAULT_GUIDE, lines } from "./bank.js";
+import { results, countGifts, cleanTeams, parseCommitments, canJoin, memberSteps } from "./engine.js";
 import * as L from "./live.js";
 import * as N from "./native.js";
 import { privacyPage, termsPage } from "./pages.js";
@@ -70,9 +70,11 @@ function renderTypeCode(err) {
 }
 
 // ================= MEMBER FLOW =================
-const STEPS = ["welcome", "about", "household", "faith", "story", "skills", "passions", "availability", "prayer", "pause", "gifts", "results", "decide", "commit", "sent"];
+const STEPS = ["welcome", "about", "household", "faith", "story", "skills", "passions", "availability", "prayer", "pause", "gifts", "results", "decide", "baptismfirst", "commit", "sent"];
+// What this church calls joining (owner, 23 Oct 2026): "join the serve team", "become a covenant member"...
+const joinTerm = (c) => String(c?.joinTerm || DEFAULT_JOIN_TERM).trim();
 const PART1 = 8; // about .. prayer
-let M = null; // { key, church, i, q, a, picks, decision, commits, sheet, busy, error, demo }
+let M = null; // { key, church, i, q, a, picks, decision, commits, sheet, busy, error, demo, saved }
 
 async function startJoin(code) {
   $("#app").innerHTML = `<div class="phone"><div class="pbody center"><p class="lead">Opening your class…</p></div></div>`;
@@ -95,9 +97,9 @@ async function startMember(key) {
     const picks = Array.isArray(mem.picks) ? mem.picks.slice() : [];
     let q = 0; while (q < PAIRS.length - 1 && picks[q]) q++;
     if (STEPS[i] === "gifts" && picks.length >= PAIRS.length && picks.every(Boolean)) i = STEPS.indexOf("results");
-    M = { key, church: r.church || L.DEMO_CHURCH, i, q, a, picks, decision: null, commits: [], sheet: false, busy: false, error: null, demo: !!r.demo || key === "demo" };
+    M = { key, church: r.church || L.DEMO_CHURCH, i, q, a, picks, decision: mem.decision || null, commits: Object.keys(mem.commitments || {}), sheet: false, busy: false, error: null, demo: !!r.demo || key === "demo", saved: mem.status === "submitted" ? mem : null };
     setAccent(M.church.accent);
-    document.title = (M.church.name || "Here To Serve") + " · membership";
+    document.title = (M.church.name || "Here To Serve") + " · " + (M.church.className || "Growth Track");
     renderMember();
   } catch (e) { $("#app").innerHTML = `<div class="phone"><div class="pbody center"><h1>Something went wrong</h1><p class="lead">${esc(errMsg(e))}</p></div></div>`; }
 }
@@ -131,7 +133,7 @@ function screen() {
     <div class="card parts"><div class="part"><span class="num">1</span>About you · 7 minutes</div><div class="part"><span class="num">2</span>Your gifts · 8–10 minutes</div></div>
     <p class="fine">By tapping Get started, you confirm you're 18 or older. Your answers stay with our church team. <a href="#/privacy">Privacy</a></p></div>`;
   if (s === "about") return `<div class="pbody"><h1>First, the basics.</h1>${field("f-name", "Name", "text", "First and last name", "name")}${field("f-email", "Email", "email", "you@email.com", "email")}${field("f-phone", "Phone", "tel", "(555) 555-5555", "phone")}</div>`;
-  if (s === "household") return `<div class="pbody"><h1>Your household</h1><div class="q"><div class="qt">Are you single or married?</div>${chips("married")}</div><div class="q"><div class="qt">Kids at home?</div>${chips("kids")}</div>${field("f-ages", "Kids' ages (optional)", "text", "e.g. 3, 7, 12", "kidsAges")}</div>`;
+  if (s === "household") return `<div class="pbody"><h1>Your household</h1><div class="q"><div class="qt">Are you single or married?</div>${chips("married")}</div>${M.a.married === "Married" ? field("f-spouse", "Spouse's name, if they're in this class too (optional)", "text", "First and last name", "spouseName") : ""}<div class="q"><div class="qt">Kids at home?</div>${chips("kids")}</div>${field("f-ages", "Kids' ages (optional)", "text", "e.g. 3, 7, 12", "kidsAges")}</div>`;
   if (s === "faith") return `<div class="pbody"><h1>Your faith steps</h1><div class="q"><div class="qt">Have you put your faith in Jesus?</div>${chips("faith")}</div><div class="q"><div class="qt">Have you been baptized as a believer?</div>${chips("bapt")}</div><div class="q"><div class="qt">Are you in a group?</div>${chips("group")}</div></div>`;
   if (s === "story") return `<div class="pbody"><h1>How you got here</h1><div class="q"><div class="qt">How did you first find ${esc(c.name)}?</div>${chips("found")}</div><div class="q"><div class="qt">Have you served at a church before?</div>${chips("served")}</div>${field("f-served", "Where, and on what team? (optional)", "text", "e.g. Kids at Grace Church", "servedWhere")}</div>`;
   if (s === "skills") return `<div class="pbody"><h1>What are you good at?</h1><p class="sub">Tap all that apply. Work, hobbies, anything.</p>${chips("skills", true)}</div>`;
@@ -157,17 +159,52 @@ function screen() {
       <div class="q"><div class="kick">Your next steps</div>${r.nextSteps.map((t) => `<div class="stepline">${ICON.circle}<span>${esc(t)}</span></div>`).join("")}</div>
       <div class="note">Keep this screen open. A leader will sit down with you now and go over it in your one-on-one.</div></div>`;
   }
-  if (s === "decide") return `<div class="pbody"><h1>One last step</h1><p class="sub">Are you ready to become a member of ${esc(c.name)}? Either answer is a good one.</p>
-    <button type="button" class="choice go" data-act="ready"><b>I'm ready to join</b><span>Next, you'll make our membership commitments.</span></button>
-    <button type="button" class="choice" data-act="notready"><b>I'm not ready to join yet</b><span>No pressure. We'll submit your answers and stay in touch.</span></button></div>`;
+  if (s === "decide") return `<div class="pbody"><h1>One last step</h1><p class="sub">Are you ready to ${esc(joinTerm(c))} at ${esc(c.name)}? Either answer is a good one.</p>
+    <button type="button" class="choice go" data-act="ready"><b>I'm ready to ${esc(joinTerm(c))}</b><span>Next, you'll make our commitments.</span></button>
+    <button type="button" class="choice" data-act="notready"><b>I'm not ready yet</b><span>No pressure. We'll submit your answers and stay in touch.</span></button></div>`;
+  if (s === "baptismfirst") return `<div class="pbody"><h1>One step first</h1><p class="lead">To ${esc(joinTerm(c))}, we ask that you've trusted Jesus and been baptized as a believer. That's a great next step, and we'd love to walk with you into it.</p>
+    <button type="button" class="choice go" data-act="notready"><b>Submit as "not ready yet"</b><span>A pastor will reach out about following Jesus and baptism.</span></button>
+    <button type="button" class="choice" data-act="fixfaith"><b>I answered that wrong</b><span>Go back to your faith steps and change your answer.</span></button></div>`;
   if (s === "commit") {
     const list = c.commitments || [];
-    return `<div class="pbody" style="gap:14px"><h1>Our commitment</h1><p class="sub">Membership is a promise we make to each other. Check each one you're ready to make.</p>
+    return `<div class="pbody" style="gap:14px"><h1>Our commitment</h1><p class="sub">This is a promise we make to each other. Check each one you're ready to make.</p>
       ${list.map((x) => { const on = M.commits.includes(x.k); return `<div class="commit"><button type="button" class="crow" aria-pressed="${on}" data-act="commit" data-v="${esc(x.k)}"><span class="box">${ICON.check()}</span><span><span class="cw">${esc(x.word)}</span><span class="cs">${esc(x.statement)}</span><span class="cv">${esc(x.verse)}</span></span></button>${x.k === "belief" && (c.beliefs || []).length ? `<button type="button" class="textlink" data-act="sheet">Read what we believe</button>` : ""}</div>`; }).join("")}
-      ${allCommitted() ? "" : `<p class="sub" style="font-size:14px">Check each one to submit. Not ready on one? That's okay. Go back and choose "I'm not ready to join yet."</p>`}</div>`;
+      ${allCommitted() ? "" : `<p class="sub" style="font-size:14px">Check each one to submit. Not ready on one? That's okay. Go back and choose "I'm not ready yet."</p>`}</div>`;
   }
-  if (s === "sent") return `<div class="pbody center"><div class="check" style="width:72px;height:72px;background:var(--accent);color:#fff">${ICON.check(34, 2.4)}</div><h1 style="font-size:32px">Submitted!</h1><p class="lead">Your answers have been submitted. Someone from our team will reach out to you soon with your next steps.</p>${M.demo ? `<button class="btn quiet" data-act="demo-reset">Start the demo over</button>` : ""}</div>`;
+  if (s === "sent") return sentScreen();
   return "";
+}
+// Their own copy: gifts, teams, commitments and next steps, kept at their link and sent to their own phone or email
+function myCopy() {
+  const c = M.church, sv = M.saved || {};
+  const r = results(M.a, M.picks, c.teams || []);
+  const gifts = (sv.topGifts?.length ? sv.topGifts : r.top.map((g) => g.key)).map((g) => GIFTS[g]).filter(Boolean);
+  const teams = sv.team ? [sv.team] : sv.recTeams?.length ? sv.recTeams : r.teams.map((t) => t.name);
+  const made = new Set(sv.commitments ? Object.keys(sv.commitments) : M.commits);
+  const commits = (c.commitments || []).filter((x) => made.has(x.k));
+  const decision = sv.decision || M.decision;
+  return { gifts, teams, commits, steps: memberSteps(M.a), decision, link: `${L.siteUrl()}/#/m/${M.key}` };
+}
+function copyText() {
+  const c = M.church, x = myCopy();
+  return [`${c.name}: my results from ${c.className || "class"}`, `Top gifts: ${x.gifts.join(", ")}`, `Teams to talk about: ${x.teams.join(", ")}`,
+    x.commits.length ? `Commitments I made: ${x.commits.map((k) => k.word).join(", ")}` : "", `Next steps: ${x.steps.join("; ")}`, `See it any time: ${x.link}`].filter(Boolean).join("\n");
+}
+function sentScreen() {
+  const c = M.church, x = myCopy();
+  const joining = x.decision === "joining";
+  return `<div class="pbody"><div class="center"><div class="check" style="width:72px;height:72px;background:var(--accent);color:#fff;margin:0 auto">${ICON.check(34, 2.4)}</div><h1 style="font-size:32px">Submitted!</h1>
+    <p class="lead">${joining ? `Thank you for saying yes. A pastor will confirm your next step after your one-on-one, and someone from our team will reach out soon.` : `Your answers are in. Someone from our team will reach out soon about your next steps.`}</p></div>
+    <div class="card q"><div class="kick">Your top gifts</div><p style="margin:0"><b>${esc(x.gifts.join(" · "))}</b></p>
+      <div class="kick">Teams to talk about</div><p style="margin:0">${esc(x.teams.join(" · "))}</p>
+      ${x.commits.length ? `<div class="kick">Commitments you made</div><p style="margin:0">${esc(x.commits.map((k) => k.word).join(" · "))}</p>` : ""}
+      <div class="kick">Your next steps</div>${x.steps.map((t) => `<div class="stepline">${ICON.circle}<span>${esc(t)}</span></div>`).join("")}</div>
+    <div class="card q"><h2 style="font-size:20px;margin:0">Send yourself a copy</h2><p class="sub" style="font-size:14px;margin:0">No more screenshots. It includes a link back to this page.</p>
+      <label class="fl" for="cp-phone">Phone</label><input class="in" id="cp-phone" type="tel" value="${esc(M.a.phone || M.saved?.phone || "")}" autocomplete="tel">
+      <button class="btn" data-act="copy-sms">Text me a copy</button>
+      <label class="fl" for="cp-email">Email</label><input class="in" id="cp-email" type="email" value="${esc(M.a.email || M.saved?.email || "")}" autocomplete="email">
+      <button class="btn ghost" data-act="copy-email">Email me a copy</button></div>
+    ${M.demo ? `<button class="btn quiet" data-act="demo-reset">Start the demo over</button>` : ""}</div>`;
 }
 const allCommitted = () => (M.church.commitments || []).every((x) => M.commits.includes(x.k));
 
@@ -178,10 +215,10 @@ function renderMember() {
   let pct = 0, plabel = "";
   if (inPart1) { pct = Math.round((M.i / PART1) * 100); plabel = `Part 1 · ${M.i} of ${PART1}`; }
   if (s === "gifts") { pct = Math.round(((M.q + 1) / PAIRS.length) * 100); plabel = `Part 2 · ${M.q + 1} of ${PAIRS.length}`; }
-  const top = s === "welcome" || s === "sent" ? "" : `<div class="ptop"><div class="prow">${s === "commit" || s === "decide" || M.i > 0 ? `<button class="round" aria-label="Back" data-act="back">${ICON.back}</button>` : `<span class="spacer"></span>`}${MARK}<span class="spacer"></span></div>
+  const top = s === "welcome" || s === "sent" ? "" : `<div class="ptop"><div class="prow">${s === "commit" || s === "decide" || s === "baptismfirst" || M.i > 0 ? `<button class="round" aria-label="Back" data-act="back">${ICON.back}</button>` : `<span class="spacer"></span>`}${MARK}<span class="spacer"></span></div>
     ${plabel ? `<div class="plabel">${plabel}</div><div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100"><span style="width:${pct}%"></span></div>` : ""}</div>`;
   const labels = { welcome: "Get started", prayer: "Finish Part 1", pause: "Start Part 2", results: "Continue after my one-on-one", commit: "Submit" };
-  const showCta = !["gifts", "decide", "sent"].includes(s);
+  const showCta = !["gifts", "decide", "baptismfirst", "sent"].includes(s);
   const locked = s === "commit" && !allCommitted();
   const sheet = M.sheet ? `<div class="sheetwrap" data-act="sheet-close-bg"><div class="sheet" role="dialog" aria-modal="true" aria-label="What we believe"><div class="sheethead"><div><h2>What we believe</h2><div class="small">The short version</div></div><button class="round" aria-label="Close" data-act="sheet-close">${ICON.x}</button></div>
     <div class="sheetbody">${(M.church.beliefs || []).map((b) => `<div class="belief"><span class="cw">${esc(b.word)}</span><p>${esc(b.text)}</p><span class="small">${esc(b.verse)}</span></div>`).join("")}<p class="sub" style="font-size:14px;margin-top:16px">Want the full statement? Ask your leader in your one-on-one.</p></div></div></div>` : "";
@@ -195,7 +232,7 @@ async function memberAct(act, el) {
   if (act === "multi") { const k = el.dataset.k, v = el.dataset.v, cur = M.a[k] || []; M.a[k] = cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v]; return renderMember(); }
   if (act === "back") {
     if (s === "gifts" && M.q > 0) { M.q--; return renderMember(); }
-    if (s === "commit") { M.i = STEPS.indexOf("decide"); return renderMember(); }
+    if (s === "commit" || s === "baptismfirst") { M.i = STEPS.indexOf("decide"); return renderMember(); }
     M.i = Math.max(0, M.i - 1); if (stepName() === "gifts") M.q = PAIRS.length - 1;
     return renderMember();
   }
@@ -214,15 +251,25 @@ async function memberAct(act, el) {
     // Simulation, 23 Oct 2026: with no email or phone nobody could follow up, so one of them is required
     if (s === "about" && !(M.a.email || "").trim() && !(M.a.phone || "").trim()) { M.error = "Add an email or phone number so we can follow up with your next steps."; return renderMember(); }
     M.i = Math.min(M.i + 1, STEPS.indexOf("decide"));
-    if (stepName() === "gifts") { M.q = 0; while (M.q < PAIRS.length - 1 && M.picks[M.q]) M.q++; }
+    if (stepName() === "gifts") { M.q = 0; while (M.q < PAIRS.length - 1 && M.picks[M.q]) M.q++; if (M.picks.length >= PAIRS.length && M.picks.every(Boolean)) M.i = STEPS.indexOf("results"); }
     M.busy = true; renderMember(); await persist(); M.busy = false; return renderMember();
   }
   if (act === "ready") {
     if (!M.demo) { try { const r = await L.open(M.key); if (r?.church) M.church = r.church; } catch {} }
+    // Baptism comes first when the church requires it
+    if (!canJoin(M.a, M.church.requireBaptism !== false)) { M.i = STEPS.indexOf("baptismfirst"); return renderMember(); }
     M.commits = M.commits.filter((k) => (M.church.commitments || []).some((x) => x.k === k));
     M.i = STEPS.indexOf("commit"); return renderMember();
   }
   if (act === "notready") return doSubmit("not_ready");
+  if (act === "fixfaith") { M.i = STEPS.indexOf("faith"); return renderMember(); }
+  if (act === "copy-sms" || act === "copy-email") {
+    const sms = act === "copy-sms", to = ($(sms ? "#cp-phone" : "#cp-email")?.value || "").trim();
+    if (!to) { M.error = sms ? "Add your phone number first." : "Add your email first."; return renderMember(); }
+    const body = encodeURIComponent(copyText());
+    location.href = sms ? `sms:${to.replace(/[^0-9+]/g, "")}?&body=${body}` : `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(M.church.name + ": my gifts and next steps")}&body=${body}`;
+    return;
+  }
   if (act === "commit") { const k = el.dataset.v; M.commits = M.commits.includes(k) ? M.commits.filter((x) => x !== k) : [...M.commits, k]; return renderMember(); }
   if (act === "sheet") { M.sheet = true; return renderMember(); }
   if (act === "sheet-close" || act === "sheet-close-bg") { M.sheet = false; return renderMember(); }
@@ -234,6 +281,7 @@ async function doSubmit(decision) {
   try {
     await L.submit(M.key, M.a, M.picks, decision, decision === "joining" ? M.commits : []);
     M.i = STEPS.indexOf("sent"); M.error = null;
+    if (!M.demo) { try { const r = await L.open(M.key); if (r?.member) M.saved = r.member; } catch {} }
   } catch (e) { M.error = errMsg(e); }
   M.busy = false; renderMember();
 }
@@ -247,7 +295,21 @@ const P = () => L.state;
 const memberById = (id) => P().members.find((m) => m.id === id);
 const giftsOf = (m) => (m.gifts_override?.length ? m.gifts_override : m.top_gifts || []);
 const teamOf = (m) => m.team || (m.rec_teams || [])[0] || "";
-const statusOf = (m) => (m.status !== "submitted" ? ["In progress", "pill"] : m.decision === "joining" ? ["Joined", "pill ok"] : ["Not ready yet", "pill warn"]);
+// "Joined" only once a pastor approves after the one-on-one (owner, 23 Oct 2026)
+const statusOf = (m) => (m.status !== "submitted" ? ["In progress", "pill"] : m.decision !== "joining" ? ["Not ready yet", "pill warn"]
+  : m.approved_at ? ["Joined", "pill ok"] : m.held_at ? ["On hold", "pill late"] : ["Waiting for approval", "pill warn"]);
+const waiting = () => P().members.filter((m) => m.status === "submitted" && m.decision === "joining" && !m.approved_at && !m.held_at);
+const faithFlag = (a = {}) => a.faith !== "Yes" || a.bapt !== "Yes";
+const churchSet = () => L.active()?.settings || {};
+const guideHtml = () => `<details class="panel guide"><summary><b>One-on-one guide</b></summary>${lines(churchSet().guide || DEFAULT_GUIDE).map((g) => `<p><b>${esc(g.title)}.</b> ${esc(g.text)}</p>`).join("")}</details>`;
+const spouseOf = (m) => {
+  const n = (x) => String(x || "").trim().toLowerCase();
+  return P().members.find((o) => o.id !== m.id && o.class_id === m.class_id && ((n(m.answers?.spouseName) && n(o.name) === n(m.answers.spouseName)) || (n(o.answers?.spouseName) && n(o.answers.spouseName) === n(m.name))));
+};
+function approveForm(m) {
+  return `<div class="q"><div class="row"><button class="btn" data-act="approve" data-id="${m.id}">Approve</button></div>
+    <form data-form="hold" data-id="${m.id}" class="inline"><input class="in" name="note" maxlength="1000" placeholder="Private note for the team (optional)" aria-label="Why it's on hold"><button class="btn quiet" type="submit">Put on hold</button></form></div>`;
+}
 const openSteps = () => P().steps.filter((s) => !s.done_at);
 const isLate = (s) => !s.done_at && s.due && s.due < today();
 const teamNames = () => (L.active()?.settings?.teams || []).map((t) => t.name);
@@ -349,12 +411,14 @@ function snapshotPanel() {
 function viewHome() {
   const ms = P().members;
   const sub = ms.filter((m) => m.status === "submitted");
-  const joined = sub.filter((m) => m.decision === "joining").length;
+  const joined = sub.filter((m) => m.decision === "joining" && m.approved_at).length;
   const open = openSteps();
   const late = open.filter(isLate);
   const latest = P().classes[0];
   return `<div class="row"><div class="grow"><h1>Today</h1><p class="sub">${latest ? `Latest class: ${esc(latest.name)} · ${fmt(latest.class_date)}` : "No classes yet."}</p></div><button class="btn" data-act="nav" data-to="classes">New class</button></div>
-    <div class="tiles"><div class="tile"><span>Finished the class</span><b>${sub.length}</b></div><div class="tile"><span>Joined</span><b style="color:var(--accent)">${joined}</b></div><div class="tile"><span>Not ready yet</span><b>${sub.length - joined}</b></div><div class="tile dark"><span>Open next steps</span><b>${open.length}</b></div></div>
+    <div class="tiles"><div class="tile"><span>Finished the class</span><b>${sub.length}</b></div><div class="tile"><span>Joined</span><b style="color:var(--accent)">${joined}</b></div><div class="tile"><span>Waiting for approval</span><b>${waiting().length}</b></div><div class="tile"><span>Not ready yet</span><b>${sub.filter((m) => m.decision === "not_ready").length}</b></div><div class="tile dark"><span>Open next steps</span><b>${open.length}</b></div></div>
+    ${waiting().length ? `<section class="panel" style="border:2px solid var(--accent)"><h2>Waiting for approval</h2><p class="hint">They chose to join. Approve after their one-on-one, or put it on hold with a private note. Team leads only see people you approve.</p>
+      ${waiting().map((m) => `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "No name")}</button></b><span class="small">${esc(giftsOf(m).map((g) => GIFTS[g]).join(", "))}${faithFlag(m.answers) ? ` · <b style="color:var(--warm-ink)">Check faith and baptism</b>` : ""}</span></div><button class="btn" data-act="approve" data-id="${m.id}">Approve</button></div>`).join("")}</section>` : ""}
     ${late.length ? `<section class="panel" style="border:2px solid var(--warm)"><h2>Needs attention</h2><p class="hint">Next steps past their due date.</p>${late.map((s) => stepRow(s)).join("")}</section>` : ""}
     <section class="panel"><h2>Next steps checklist</h2><p class="hint">Every step has an owner and a due date. Tap to check off.</p>${open.length ? open.map((s) => stepRow(s)).join("") : `<p class="sub">All caught up.</p>`}</section>
     ${snapshotPanel()}`;
@@ -362,8 +426,8 @@ function viewHome() {
 
 function viewPeople() {
   const f = V.filter;
-  const list = P().members.filter((m) => f === "all" || (f === "joined" ? m.decision === "joining" : f === "notready" ? m.decision === "not_ready" : m.status !== "submitted"));
-  return `<div class="row"><h1 class="grow">People</h1><div class="filters">${[["all", "All"], ["joined", "Joined"], ["notready", "Not ready"], ["progress", "In progress"]].map(([k, l]) => `<button class="pillbtn" aria-pressed="${f === k}" data-act="filter" data-v="${k}">${l}</button>`).join("")}</div></div>
+  const list = P().members.filter((m) => f === "all" || (f === "joined" ? m.decision === "joining" && m.approved_at : f === "waiting" ? m.status === "submitted" && m.decision === "joining" && !m.approved_at : f === "notready" ? m.decision === "not_ready" : m.status !== "submitted"));
+  return `<div class="row"><h1 class="grow">People</h1><div class="filters">${[["all", "All"], ["joined", "Joined"], ["waiting", "Waiting"], ["notready", "Not ready"], ["progress", "In progress"]].map(([k, l]) => `<button class="pillbtn" aria-pressed="${f === k}" data-act="filter" data-v="${k}">${l}</button>`).join("")}</div></div>
     <section class="panel"><div class="tablewrap"><table><thead><tr><th>Name</th><th>Top gifts</th><th>Team</th><th>Can serve</th><th>Status</th></tr></thead><tbody>
     ${list.map((m) => { const [st, cls] = statusOf(m); return `<tr><td><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "No name yet")}</button></td><td>${esc(giftsOf(m).map((g) => GIFTS[g]).join(", "))}</td><td>${esc(teamOf(m))}</td><td style="color:var(--quiet)">${esc(m.answers?.when || "")}</td><td><span class="${cls}">${st}</span></td></tr>`; }).join("") || `<tr><td colspan="5" style="color:var(--quiet)">No one here yet.</td></tr>`}
     </tbody></table></div></section>
@@ -394,7 +458,13 @@ function viewPerson() {
   const commList = L.active().settings?.commitments || [];
   const notes = P().notes[m.id] || [];
   const back = core ? `<button class="btn quiet" data-act="nav" data-to="people">← People</button>` : `<button class="btn quiet" data-act="class" data-id="${m.class_id}">← Class</button>`;
+  const sp = spouseOf(m);
+  const iv = m.interviewer ? personName(m.interviewer) : "";
+  const pending = m.status === "submitted" && m.decision === "joining" && !m.approved_at;
   return `<div class="row">${back}<h1 class="grow">${esc(m.name || "No name yet")}</h1><span class="${cls}">${st}</span>${m.ext_person_id ? `<span class="pill ok">In ${esc(L.SYSTEMS[m.ext_system] || "")}</span>` : ""}</div>
+  ${core && pending ? `<section class="panel" style="border:2px solid var(--accent)"><h2>${m.held_at ? "On hold" : "Approve joining"}</h2>
+    <p class="hint">${m.held_at ? `Put on hold ${fmt(m.held_at)}.${m.hold_note ? ` Note: ${esc(m.hold_note)}` : ""}` : "They chose to join and made every commitment. Approve after their one-on-one."}${faithFlag(a) ? ` <b style="color:var(--warm-ink)">They answered faith "${esc(a.faith || "")}" and baptized "${esc(a.bapt || "")}". Talk about this before approving.</b>` : ""}</p>${approveForm(m)}</section>` : ""}
+  ${m.status !== "submitted" || pending ? guideHtml() : ""}
   <div class="cols">
     <section class="panel"><h2>Gifts</h2>
       ${m.scores ? ranked.map((g) => `<div class="giftbar"><span>${GIFTS[g]}${gifts.includes(g) ? " ★" : ""}</span><span class="bar"><span style="width:${Math.round(((scores[g] || 0) / 6) * 100)}%"></span></span><b>${scores[g] || 0} of 6</b></div>`).join("") : `<p class="sub">Gifts show once they finish Part 2.</p>`}
@@ -410,7 +480,9 @@ function viewPerson() {
       <dt>Found us</dt><dd>${esc(a.found || "")}</dd><dt>Served before</dt><dd>${esc([a.served, a.servedWhere].filter(Boolean).join(" · "))}</dd>
       <dt>Skills</dt><dd>${esc((a.skills || []).join(", "))}</dd><dt>Passions</dt><dd>${esc((a.passions || []).join(", "))}</dd>
       <dt>Can serve</dt><dd>${esc([a.when, a.often].filter(Boolean).join(" · "))}</dd>
-      <dt>Commitments</dt><dd>${comm.length ? `All ${comm.length} on ${fmt(comm[0][1])}` : m.decision === "not_ready" ? "Not ready to join yet" : "Not yet"}</dd></dl>
+      <dt>Commitments</dt><dd>${comm.length ? `All ${comm.length} on ${fmt(comm[0][1])}` : m.decision === "not_ready" ? "Not ready yet" : "Not yet"}</dd>
+      ${sp ? `<dt>Spouse</dt><dd><button class="namebtn" data-act="person" data-id="${sp.id}">${esc(sp.name)}</button></dd>` : a.spouseName ? `<dt>Spouse</dt><dd>${esc(a.spouseName)}</dd>` : ""}
+      <dt>One-on-one</dt><dd>${core ? `<select class="in" style="width:auto;min-height:40px" data-act-change="interviewer" data-id="${m.id}" aria-label="One-on-one leader"><option value="">Not paired yet</option>${P().team.map((t) => `<option value="${t.user_id}" ${m.interviewer === t.user_id ? "selected" : ""}>${esc(t.name || t.email)}</option>`).join("")}</select>` : esc(iv || "Not paired yet")}</dd></dl>
       ${comm.length ? `<p class="hint">${esc(commList.filter((x) => m.commitments[x.k]).map((x) => x.word).join(" · "))}</p>` : ""}
     </section>
   </div>
@@ -428,7 +500,7 @@ function viewPerson() {
 function viewClasses() {
   const core = L.isCore();
   return `<div class="row"><h1 class="grow">${core ? "Classes" : "Your class"}</h1></div>
-    ${core ? `<section class="panel"><h2>New class</h2><form data-form="class" class="inline"><input class="in" name="name" placeholder="e.g. Membership class · November" required maxlength="120" aria-label="Class name"><input class="in" type="date" name="date" value="${today()}" style="flex:0 1 180px" aria-label="Class date"><button class="btn" type="submit">Create</button></form></section>` : `<p class="sub">You're helping with one-on-ones. Tap a class to see its people.</p>`}
+    ${core ? `<section class="panel"><h2>New class</h2><form data-form="class" class="inline"><input class="in" name="name" placeholder="e.g. Growth Track · November" required maxlength="120" aria-label="Class name"><input class="in" type="date" name="date" value="${today()}" style="flex:0 1 180px" aria-label="Class date"><button class="btn" type="submit">Create</button></form></section>` : `<p class="sub">You're helping with one-on-ones. Tap a class to see its people.</p>`}
     <section class="panel"><h2>${core ? "All classes" : "Classes you're helping with"}</h2>${P().classes.map((k) => { const n = P().members.filter((m) => m.class_id === k.id); return `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="class" data-id="${k.id}">${esc(k.name)}</button></b><span class="small">${fmt(k.class_date)} · ${n.filter((m) => m.status === "submitted").length} of ${n.length} finished</span></div><span class="${k.open ? "pill ok" : "pill"}">${k.open ? "Open" : "Closed"}</span></div>`; }).join("") || `<p class="sub">No classes yet.</p>`}</section>`;
 }
 
@@ -449,9 +521,21 @@ function viewClass() {
       <p class="fine">Links stop taking new people 30 days after the class date, or when you close the class.</p>
       <h2 style="margin-top:8px">One-on-one leaders</h2><p class="hint">Team Leads you add here can see and take notes on this class's people while the class is open.</p>
       ${P().team.filter((t) => t.role === "team_lead").map((t) => `<label class="taskrow" style="cursor:pointer"><input type="checkbox" data-act-change="class-leader" data-id="${k.id}" data-user="${t.user_id}" ${leaders.includes(t.user_id) ? "checked" : ""} style="width:22px;height:22px"><span class="t"><b>${esc(t.name || t.email)}</b><span class="small">Team Lead · ${esc((t.teams || []).join(", "))}</span></span></label>`).join("") || `<p class="sub">No Team Leads yet. An Administrator invites them in Settings.</p>`}</section>` : ""}
-    <section class="panel ${core ? "wide" : ""}"><h2>In this class</h2><p class="hint">${core ? "Updates live as people finish." : "Tap a name for their card: add notes and adjust their gifts or team."}</p>
+    ${runPanel()}
+    <section class="panel ${core ? "wide" : ""}"><h2>In this class</h2><p class="hint">${core ? "Updates live as people finish. Pair each person with a one-on-one leader." : "Your one-on-ones are first. Tap a name for their card: add notes and adjust their gifts or team."}</p>
       ${(() => { const empty = ms.filter((m) => m.status !== "submitted" && !m.name).length; return empty ? `<p class="hint">${empty} ${empty === 1 ? "phone has" : "phones have"} opened the form without a name yet. If someone scanned twice on another phone, that extra one can be ignored.</p>` : ""; })()}
-      ${ms.filter((m) => m.status === "submitted" || m.name).map((m) => { const [st, cls] = statusOf(m); return `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "Just started")}</button></b><span class="small">${m.status === "submitted" ? esc(giftsOf(m).map((g) => GIFTS[g]).join(", ")) : `Step ${m.step} of ${STEPS.length - 1}`}</span></div><span class="${cls}">${st}</span></div>`; }).join("") || `<p class="sub">No one has scanned in yet.</p>`}</section></div>`;
+      ${ms.filter((m) => m.status === "submitted" || m.name).sort((x, y) => (y.interviewer === L.uid()) - (x.interviewer === L.uid())).map((m) => { const [st, cls] = statusOf(m); return `<div class="taskrow"><div class="t"><b><button class="namebtn" data-act="person" data-id="${m.id}">${esc(m.name || "Just started")}</button></b><span class="small">${m.status === "submitted" ? esc(giftsOf(m).map((g) => GIFTS[g]).join(", ")) : `Step ${m.step} of ${STEPS.length - 1}`}${!core && m.interviewer === L.uid() ? " · your one-on-one" : ""}</span></div>
+        ${core ? `<select class="in" style="width:auto;min-height:40px;font-size:13px" data-act-change="interviewer" data-id="${m.id}" aria-label="One-on-one leader for ${esc(m.name || "")}"><option value="">One-on-one with…</option>${P().team.map((t) => `<option value="${t.user_id}" ${m.interviewer === t.user_id ? "selected" : ""}>${esc(t.name || t.email)}</option>`).join("")}</select>` : ""}<span class="${cls}">${st}</span></div>`; }).join("") || `<p class="sub">No one has scanned in yet.</p>`}</section></div>`;
+}
+
+// The host's run sheet: the script, the lead pastor's video and the one-on-one guide
+function runPanel() {
+  const st = churchSet(), jt = String(st.joinTerm || DEFAULT_JOIN_TERM);
+  const video = safeUrl(st.videoUrl);
+  return `<section class="panel wide"><h2>Run the class</h2>
+    ${video ? `<a class="btn" style="align-self:flex-start;text-decoration:none" href="${esc(video)}" target="_blank" rel="noopener">Play the lead pastor's video</a>` : `<p class="hint">Add the lead pastor's video link in Settings and a play button shows here.</p>`}
+    <ol class="script">${lines(st.hostScript || DEFAULT_HOST_SCRIPT).map((x) => `<li><b>${esc(x.title)}.</b> ${esc(x.text.replace(/\{join\}/g, jt))}</li>`).join("")}</ol>
+    ${guideHtml()}</section>`;
 }
 
 function viewHandoff() {
@@ -459,10 +543,10 @@ function viewHandoff() {
   const teams = tl ? L.me()?.teams || [] : [];
   const list = P().handoff;
   const mySteps = tl ? openSteps().filter((s) => s.owner_user === L.uid()) : [];
-  return `<div class="row"><h1 class="grow">${tl ? `${esc(teams.join(", "))}: new people` : "Team handoff"}</h1></div><p class="sub">${tl ? "People headed to your team. Reach out and set their first Sunday." : "Everyone who joined, by the team they're headed to."}</p>
+  return `<div class="row"><h1 class="grow">${tl ? `${esc(teams.join(", "))}: new people` : "Team handoff"}</h1></div><p class="sub">${tl ? "People a pastor has approved for your team. Reach out and set their first Sunday." : "Everyone approved to join, by the team they're headed to."}</p>
     ${tl && mySteps.length ? `<section class="panel"><h2>Assigned to you</h2>${mySteps.map((s) => stepRow(s, false)).join("")}</section>` : ""}
     <div class="row" style="align-items:stretch">${list.map((h) => `<div class="hcard"><span class="kick" style="font-size:12px">${esc(h.team || "No team yet")}</span><b style="font-size:16px">${esc(h.name || "")}</b><span class="small">${esc((h.top_gifts || []).map((g) => GIFTS[g]).join(", "))}</span><span class="small">${esc([h.serve_when, h.often].filter(Boolean).join(" · "))}</span><span class="small">${esc([h.email, h.phone].filter(Boolean).join(" · "))}</span>
-      <label class="small" style="display:flex;flex-direction:column;gap:4px">First Sunday<input type="date" class="in" style="min-height:44px" value="${esc(h.first_sunday || "")}" data-act-change="first-sunday" data-id="${h.member_id}"></label></div>`).join("") || `<p class="sub">No one yet.</p>`}</div>`;
+      ${h.check_pending ? `<span class="pill late">Background check pending</span><span class="small">Set their first Sunday once it's done.</span>` : `<label class="small" style="display:flex;flex-direction:column;gap:4px">First Sunday<input type="date" class="in" style="min-height:44px" value="${esc(h.first_sunday || "")}" data-act-change="first-sunday" data-id="${h.member_id}"></label>`}</div>`).join("") || `<p class="sub">No one yet.</p>`}</div>`;
 }
 
 function viewPrayer() {
@@ -555,6 +639,8 @@ function planPanel() {
     <p class="hint">Every plan starts with a 30-day free trial. Cancel before day 30 and you're never charged. Beta churches: use code <b>BETA</b> at checkout for a third off, for life.</p>
     ${PLANS.map(([name, price, who, url]) => `<div class="taskrow"><div class="t"><b>${name} · ${price}</b><span class="small">${who}</span></div><a class="btn ghost" href="${esc(planLink(url))}" target="_blank" rel="noopener">Start free trial</a></div>`).join("")}</section>`;
 }
+const STEP_KINDS = [["approve", "Approve joining (and on-hold follow-ups)"], ["faith", "Talk about following Jesus"], ["baptism", "Baptism conversation"], ["group", "Connect to a group"],
+  ["followup", "Follow up: not ready yet"], ["invite", "Invite to the next class"], ["check", "Background checks"], ["team", "Team introductions (when a team has no Team Lead)"], ["season", "Season-full check-ins"]];
 function viewSettings() {
   const c = L.active();
   const s = c.settings || {};
@@ -585,6 +671,17 @@ function viewSettings() {
     ${P().invites.length ? `<p class="hint">Waiting to accept: ${esc(P().invites.map((i) => `${i.email} (${ROLE_NAMES[i.role]})`).join(", "))}</p>` : ""}</section>
   ${connPanel()}
   ${importPanel()}
+  <section class="panel"><h2>Your words and your class</h2><form data-form="class-setup" class="q">
+    <label class="fl" for="s-join">What do you call joining?</label><input class="in" id="s-join" name="joinTerm" maxlength="60" value="${esc(s.joinTerm || DEFAULT_JOIN_TERM)}" placeholder="join the serve team">
+    <p class="hint" style="margin:0">People see "I'm ready to ${esc(s.joinTerm || DEFAULT_JOIN_TERM)}". For example: join the serve team, become a covenant member, become a member.</p>
+    <label class="small"><input type="checkbox" name="requireBaptism" ${s.requireBaptism !== false ? "checked" : ""}> Believer's baptism comes first (people who haven't been baptized choose "not ready yet")</label>
+    <label class="fl" for="s-video">Lead pastor's video link (https)</label><input class="in" id="s-video" name="videoUrl" value="${esc(s.videoUrl || "")}" placeholder="https://youtube.com/…">
+    <label class="fl" for="s-script">Host script</label><p class="hint" style="margin:0">One step per line: <b>Step | What to say or do</b>. {join} becomes your words above.</p><textarea class="in" id="s-script" name="hostScript" style="min-height:200px;font-size:14px">${esc(s.hostScript || DEFAULT_HOST_SCRIPT)}</textarea>
+    <label class="fl" for="s-guide">One-on-one guide</label><p class="hint" style="margin:0">What leaders ask and listen for. One per line: <b>Heading | Text</b>.</p><textarea class="in" id="s-guide" name="guide" style="min-height:160px;font-size:14px">${esc(s.guide || DEFAULT_GUIDE)}</textarea>
+    <button class="btn" type="submit" style="align-self:flex-start">Save</button></form></section>
+  <section class="panel"><h2>Who owns each next step</h2><p class="hint">New steps go straight to these people, and their phones get the overdue alerts. Team introductions go to that team's Team Lead first.</p>
+    <form data-form="owners" class="q">${STEP_KINDS.map(([k, label]) => `<label class="taskrow"><span class="t"><b>${esc(label)}</b></span><select class="in" style="width:auto" name="${k}" aria-label="Owner for ${esc(label)}"><option value="">No one yet</option>${P().team.map((t) => `<option value="${t.user_id}" ${(s.stepOwners || {})[k] === t.user_id ? "selected" : ""}>${esc(t.name || t.email)}</option>`).join("")}</select></label>`).join("")}
+    <button class="btn" type="submit" style="align-self:flex-start">Save owners</button></form></section>
   <section class="panel"><h2>Serving teams</h2><p class="hint">Your teams and the gifts that point people to each (up to 3). Removing or renaming a team doesn't move anyone already placed on it.</p>
     <form data-form="teams" class="q">${[...(s.teams || []), { name: "", gifts: [], check: false, _new: true }].map((t, i) => `<div class="teamedit">
       <input class="in" name="t-name-${i}" value="${esc(t.name)}" maxlength="40" placeholder="${t._new ? "Add a team" : ""}" aria-label="Team name">
@@ -593,7 +690,7 @@ function viewSettings() {
       <div class="inline"><label class="small"><input type="checkbox" name="t-check-${i}" ${t.check ? "checked" : ""}> Background check</label>${t._new ? "" : `<label class="small"><input type="checkbox" name="t-remove-${i}"> Remove</label>`}</div></div>`).join("")}
       <input type="hidden" name="t-count" value="${(s.teams || []).length + 1}">
       <div class="row"><button class="btn" type="submit">Save teams</button><button class="btn quiet" type="button" data-act="pinewood-teams">Reset to Pinewood's</button></div></form></section>
-  <section class="panel"><h2>Membership commitments</h2><p class="hint">What people check off when they join. One per line: <b>Word | Statement | Passage</b>. Keep a line starting with <b>Belief</b> to show the "Read what we believe" pop-up beside it.</p>
+  <section class="panel"><h2>Commitments</h2><p class="hint">What people check off when they join. One per line: <b>Word | Statement | Passage</b>. Keep a line starting with <b>Belief</b> to show the "Read what we believe" pop-up beside it.</p>
     <form data-form="commitments" class="q"><textarea class="in" name="commitments" style="min-height:220px;font-size:14px" aria-label="Commitments">${esc((s.commitments || []).map((x) => [x.word, x.statement, x.verse].join(" | ")).join("\n"))}</textarea>
     <button class="btn" type="submit" style="align-self:flex-start">Save commitments</button></form></section>`;
 }
@@ -628,6 +725,7 @@ document.addEventListener("click", async (e) => {
     if (act === "scan") { const code = await N.scanClassCode(); if (code) return go("#/j/" + code); return toast("That isn't a class code. Try again."); }
     if (act === "push") { const on = await N.enablePush(L.registerDevice, (r) => go(r)); return toast(on ? "Notifications are on" : "Notifications are off in your phone's Settings"); }
     if (act === "copy") { try { await navigator.clipboard.writeText(el.dataset.v); toast("Copied"); } catch { toast("Press and hold the link to copy it"); } return; }
+    if (act === "approve") { await L.approve(el.dataset.id, true); toast("Approved. Their team lead can see them now."); return render(); }
     if (act === "step-done") { const s = P().steps.find((x) => x.id === el.dataset.id); await L.setStep(s.id, { done_at: s.done_at ? null : new Date().toISOString() }); return render(); }
     if (act === "class-open") { await L.setClassOpen(el.dataset.id, el.dataset.v === "1"); return render(); }
     if (act === "prayed") { await L.markPrayed(el.dataset.id, el.dataset.v === "1"); return render(); }
@@ -684,6 +782,7 @@ document.addEventListener("change", async (e) => {
     if (k === "step-due") { await L.setStep(el.dataset.id, { due: el.value || null }); return render(); }
     if (k === "step-owner") { await L.setStep(el.dataset.id, { owner_user: el.value || null }); return render(); }
     if (k === "first-sunday") { await L.setFirstSunday(el.dataset.id, el.value); toast("First Sunday saved"); return render(); }
+    if (k === "interviewer") { await L.setInterviewer(el.dataset.id, el.value); toast("Paired"); return render(); }
     if (k === "class-leader") { await L.setClassLeader(el.dataset.id, el.dataset.user, el.checked); return render(); }
     if (k === "staff-role") {
       const t = P().team.find((x) => x.user_id === el.dataset.user);
@@ -725,6 +824,18 @@ document.addEventListener("submit", async (e) => {
       const parsed = rosterRows(parseCsv(await file.text()));
       if (parsed.error) V.imp = { error: parsed.error };
       else { V.imp = { file: file.name, rows: parsed.rows, teams: {} }; V.imp.preview = await L.previewRoster(parsed.rows, {}); }
+    }
+    if (kind === "hold") { await L.approve(f.dataset.id, false, v("note")); toast("Put on hold. A follow-up step is on the checklist."); }
+    if (kind === "class-setup") {
+      const c = L.active(), video = v("videoUrl");
+      if (video && !safeUrl(video)) throw new Error("The video link needs to start with https://");
+      await L.updateChurch({ settings: { ...(c.settings || {}), joinTerm: v("joinTerm").slice(0, 60) || DEFAULT_JOIN_TERM, requireBaptism: !!f.querySelector('input[name="requireBaptism"]')?.checked,
+        videoUrl: video || null, hostScript: v("hostScript").slice(0, 6000), guide: v("guide").slice(0, 4000) } });
+      toast("Saved");
+    }
+    if (kind === "owners") {
+      const c = L.active(), owners = Object.fromEntries(STEP_KINDS.map(([k]) => [k, v(k)]).filter(([, u]) => u));
+      await L.updateChurch({ settings: { ...(c.settings || {}), stepOwners: owners } }); toast("Owners saved. New steps go to them.");
     }
     if (kind === "staff-teams") { await L.setStaff(f.dataset.user, "team_lead", checked("teams")); toast("Teams saved"); }
     if (kind === "typecode") {

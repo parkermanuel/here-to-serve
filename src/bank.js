@@ -113,3 +113,21 @@ export const PINEWOOD_BELIEFS = [
 
 // Three access levels, highest first
 export const ROLE_NAMES = { admin: "Administrator", staff: "Staff", team_lead: "Team Lead" };
+
+// ---------- Running the class (owner, 23 Oct 2026) ----------
+// The lead pastor teaches by recorded video; the host runs the rest, cues the video, pairs the one-on-ones and closes.
+// Each church can rewrite these in Settings. {join} becomes the church's own words for joining.
+export const DEFAULT_JOIN_TERM = "join the serve team";
+export const DEFAULT_HOST_SCRIPT = `Welcome | Put the class code on the screen and welcome people as they arrive. Thank them for coming and tell them what's ahead: a short form, a video from our lead pastor, a gifts assessment, and a one-on-one with a leader.
+Part 1 | Ask everyone to scan the code with their phone camera and fill out Part 1. It takes about 7 minutes. Walk the room and help anyone who's stuck. Point anyone who can't scan to the typed code.
+The video | When most phones show "Part 1 is done", play the lead pastor's video.
+Part 2 | Ask everyone to start Part 2, the gifts assessment. It takes 8 to 10 minutes. Remind them to go with their gut.
+One-on-ones | Pair each person with a leader (on the class page). Leaders sit with them, go over their results, and ask for their story.
+Next steps | After the one-on-one, each person taps "I'm ready to {join}" or "I'm not ready yet", then Submit. Both answers are good ones.
+Close | Thank everyone, tell them someone will reach out this week, and close in prayer.`;
+export const DEFAULT_GUIDE = `Ask | "Would you share your testimony?" or "Would you tell me your story and church background?"
+Listen for | A clear trust in Jesus. Believer's baptism (if not yet, talk about it as their next step). Any consistent, unrepentant sin. Note it with grace and let a pastor follow up.
+Go over | Their top gifts and the teams on their screen. Agree on one team to try, and adjust it on their card if it doesn't fit.
+Write down | Anything a pastor should know, as a note on their card. Notes stay with your church team.`;
+// "Title | text" lines into [{title, text}]
+export const lines = (t) => String(t || "").split("\n").map((l) => l.split("|")).filter((p) => p[0]?.trim() && p[1]?.trim()).map(([a, ...b]) => ({ title: a.trim(), text: b.join("|").trim() }));

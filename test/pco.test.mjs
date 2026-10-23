@@ -54,9 +54,10 @@ const client = (fake, conn = { access_token: "AT", refresh_token: "RT", expires_
 
 // ---------- mapping ----------
 ok(splitName("Daniel van Brooks").first_name === "Daniel" && splitName("Daniel van Brooks").last_name === "van Brooks", "names split into first and last");
-const member = { id: "m1", name: "Daniel Brooks", email: "Daniel@B.com", phone: "(555) 123-4567", top_gifts: ["sh", "te", "he"], rec_teams: ["Kids", "Youth"], decision: "joining", submitted_at: "2026-10-23T15:00:00Z", commitments: { faith: "x", serve: "y" } };
+const member = { id: "m1", name: "Daniel Brooks", email: "Daniel@B.com", phone: "(555) 123-4567", top_gifts: ["sh", "te", "he"], rec_teams: ["Kids", "Youth"], decision: "joining", submitted_at: "2026-10-23T15:00:00Z", approved_at: "2026-10-24T15:00:00Z", commitments: { faith: "x", serve: "y" } };
 const fv = fieldValues(member);
-ok(fv[FIELDS.gifts] === "Shepherding, Teaching, Helps" && fv[FIELDS.team] === "Kids" && fv[FIELDS.membership] === "Member since 2026-10-23", "fields: top gifts, team, membership");
+ok(fv[FIELDS.gifts] === "Shepherding, Teaching, Helps" && fv[FIELDS.team] === "Kids" && fv[FIELDS.membership] === "Joined 2026-10-24", "fields: top gifts, team, membership");
+ok(fieldValues({ ...member, approved_at: null })[FIELDS.membership] === "Chose to join, waiting for approval", "before a pastor approves, the field says waiting for approval");
 ok(fieldValues({ ...member, gifts_override: ["le"], team: "Security" })[FIELDS.team] === "Security", "a leader's team change wins over the recommendation");
 
 // ---------- setup, push, idempotent ----------
@@ -69,11 +70,11 @@ ok(fieldValues({ ...member, gifts_override: ["le"], team: "Security" })[FIELDS.t
   const commitments = [{ k: "faith", word: "Faith" }, { k: "serve", word: "Serve" }, { k: "pray", word: "Pray" }];
   const r1 = await pushMember(c, ids, member, commitments);
   ok(fake.db.people.length === 1 && fake.db.emails[0].attributes.address === "Daniel@B.com" && fake.db.phones.length === 1, "a new person is created with email and phone");
-  ok(fake.db.data.length === 3 && fake.db.notes.length === 1 && /joined on 2026-10-23.*Faith, Serve/.test(fake.db.notes[0].note), "fields filled (blank first Sunday skipped) and a note with the decision and commitments");
+  ok(fake.db.data.length === 3 && fake.db.notes.length === 1 && /2026-10-23.*Faith, Serve.*approved to join on 2026-10-24/.test(fake.db.notes[0].note), "fields filled (blank first Sunday skipped) and a note with the decision and commitments");
   const r2 = await pushMember(c, ids, { ...member, ext_system: "pco", ext_person_id: r1.personId, first_sunday: "2026-11-01" }, commitments, r1.state);
   ok(fake.db.people.length === 1 && fake.db.data.length === 4 && fake.db.notes.length === 1 && r2.personId === r1.personId, "pushing again updates in place: no duplicate person, field or note");
   const r3 = await pushMember(c, ids, { ...member, ext_person_id: null }, commitments, {});
-  ok(r3.personId === r1.personId && r1.state.noted === "joining", "matched by email when we don't have their id yet");
+  ok(r3.personId === r1.personId && r1.state.noted === "joined", "matched by email when we don't have their id yet");
   ok(await findPerson(c, { name: "Daniel Brooks", phone: "555.123.4567" }) === r1.personId, "matched by name + phone when there's no email");
   ok(await findPerson(c, { name: "Daniel Brooks", phone: "999-999-9999" }) === null, "same name, different phone: not the same person");
 }

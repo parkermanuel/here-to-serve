@@ -138,3 +138,6 @@ select.in{min-height:48px;padding:10px 12px}
 .teamedit{display:flex;flex-direction:column;gap:8px;padding:12px 0;border-bottom:1px solid var(--line-soft)}
 .giftpick{display:flex;flex-wrap:wrap;gap:6px 14px}
 .giftpick label,.teamedit .inline label{display:flex;gap:6px;align-items:center}
+/* Run the class: the host's script and the one-on-one guide */
+.script { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; line-height: 1.5; }
+.guide { padding: 14px 16px; flex: none; align-self: stretch; height: auto; } .guide summary { cursor: pointer; } .guide p { margin: 10px 0 0; line-height: 1.5; }

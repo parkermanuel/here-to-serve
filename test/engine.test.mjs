@@ -1,6 +1,6 @@
 // Scoring checks. Run before every deploy.
 import { PAIRS, GIFT_KEYS, DEFAULT_TEAMS, PINEWOOD_BELIEFS, DEFAULT_COMMITMENTS } from "../src/bank.js";
-import { countGifts, topGifts, recommendTeams, results, staffSteps, memberSteps, cleanTeams, parseCommitments } from "../src/engine.js";
+import { countGifts, topGifts, recommendTeams, results, staffSteps, memberSteps, cleanTeams, parseCommitments, canJoin } from "../src/engine.js";
 import { classCodeFrom } from "../src/native.js";
 
 let fail = 0;
@@ -34,11 +34,14 @@ ok(topGifts(tie2, ["Our city"])[0].key === "ev", "a tapped passion lifts its gif
 
 // Next steps
 const steps = staffSteps({ faith: "Not sure", bapt: "Not yet", group: "No", when: "Sundays" }, "not_ready", ["Kids"], DEFAULT_TEAMS).map((x) => x.kind);
-ok(steps.join() === "faith,baptism,group,followup", "steps for an unsure, unbaptized, not-ready person: no team intro until they join");
-const joinSteps = staffSteps({ faith: "Yes", bapt: "Yes", group: "Yes", when: "Sundays" }, "joining", ["Kids"], DEFAULT_TEAMS).map((x) => x.kind);
-ok(joinSteps.join() === "check,team", "someone joining and headed to Kids gets a background check and a team intro");
-const full = staffSteps({ faith: "Yes", bapt: "Yes", group: "Yes", when: "My season is full right now" }, "joining", ["Kids"], DEFAULT_TEAMS).map((x) => x.kind);
-ok(full.join() === "season", "a full season gets one gentle check-in, no team or check");
+ok(steps.join() === "faith,baptism,group,followup,invite", "steps for an unsure, unbaptized, not-ready person: a follow-up and an invite to the next class, no team intro");
+const waitSteps = staffSteps({ faith: "Yes", bapt: "Yes", group: "Yes", when: "Sundays" }, "joining", ["Kids"], DEFAULT_TEAMS).map((x) => x.kind);
+ok(waitSteps.join() === "approve", "someone who chose to join waits for a pastor's approval before any team steps");
+const joinSteps = staffSteps({ faith: "Yes", bapt: "Yes", group: "Yes", when: "Sundays" }, "joining", ["Kids"], DEFAULT_TEAMS, true).map((x) => x.kind);
+ok(joinSteps.join() === "approve,check,team", "once approved and headed to Kids: a background check and a team intro");
+const full = staffSteps({ faith: "Yes", bapt: "Yes", group: "Yes", when: "My season is full right now" }, "joining", ["Kids"], DEFAULT_TEAMS, true).map((x) => x.kind);
+ok(full.join() === "approve,season", "a full season gets one gentle check-in, no team or check");
+ok(!canJoin({ faith: "Yes", bapt: "Not yet" }) && canJoin({ faith: "Yes", bapt: "Yes" }) && canJoin({ faith: "Yes", bapt: "Not yet" }, false), "baptism comes first when the church requires it");
 ok(memberSteps({ group: "Yes", when: "Sundays" }).length === 1, "a grouped, ready person sees one step");
 
 // Content
