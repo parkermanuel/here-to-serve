@@ -782,9 +782,10 @@ begin
     raise exception 'Finish all 33 gift questions first';
   end if;
   select * into c from public.churches where id = m.church_id;
+  -- Owner, 23 Oct 2026: following Jesus comes first; someone who has but isn't baptized joins after baptism
   if p_decision = 'joining' and coalesce((c.settings->>'requireBaptism')::boolean, true)
-     and (coalesce(m.answers->>'faith', '') <> 'Yes' or coalesce(m.answers->>'bapt', '') <> 'Yes') then
-    raise exception 'Baptism comes first. Choose "I''m not ready yet" and we''ll help you take that step.';
+     and coalesce(m.answers->>'faith', '') <> 'Yes' then
+    raise exception 'Following Jesus comes first. Choose "I''m not ready yet" and a pastor will reach out.';
   end if;
   if p_decision = 'joining' then
     for need in select x->>'k' from jsonb_array_elements(coalesce(c.settings->'commitments', '[]'::jsonb)) x loop

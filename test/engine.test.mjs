@@ -1,6 +1,6 @@
 // Scoring checks. Run before every deploy.
 import { PAIRS, GIFT_KEYS, DEFAULT_TEAMS, PINEWOOD_BELIEFS, DEFAULT_COMMITMENTS } from "../src/bank.js";
-import { countGifts, topGifts, recommendTeams, results, staffSteps, memberSteps, cleanTeams, parseCommitments, canJoin } from "../src/engine.js";
+import { countGifts, topGifts, recommendTeams, results, staffSteps, memberSteps, cleanTeams, parseCommitments, canJoin, joinsAfterBaptism } from "../src/engine.js";
 import { classCodeFrom } from "../src/native.js";
 
 let fail = 0;
@@ -41,7 +41,8 @@ const joinSteps = staffSteps({ faith: "Yes", bapt: "Yes", group: "Yes", when: "S
 ok(joinSteps.join() === "approve,check,team", "once approved and headed to Kids: a background check and a team intro");
 const full = staffSteps({ faith: "Yes", bapt: "Yes", group: "Yes", when: "My season is full right now" }, "joining", ["Kids"], DEFAULT_TEAMS, true).map((x) => x.kind);
 ok(full.join() === "approve,season", "a full season gets one gentle check-in, no team or check");
-ok(!canJoin({ faith: "Yes", bapt: "Not yet" }) && canJoin({ faith: "Yes", bapt: "Yes" }) && canJoin({ faith: "Yes", bapt: "Not yet" }, false), "baptism comes first when the church requires it");
+ok(!canJoin({ faith: "Not sure", bapt: "Yes" }) && canJoin({ faith: "Yes", bapt: "Not yet" }) && canJoin({ faith: "Not yet" }, false), "following Jesus comes first; baptism can follow");
+ok(joinsAfterBaptism({ faith: "Yes", bapt: "Not yet" }) && !joinsAfterBaptism({ faith: "Yes", bapt: "Yes" }) && !joinsAfterBaptism({ faith: "Yes", bapt: "Not yet" }, false), "trusted Jesus but not baptized joins after baptism");
 ok(memberSteps({ group: "Yes", when: "Sundays" }).length === 1, "a grouped, ready person sees one step");
 
 // Content

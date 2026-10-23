@@ -78,8 +78,11 @@ export function staffSteps(answers = {}, decision, recTeams = [], teams = [], ap
   return out;
 }
 
-// Baptism comes first: a church that requires it won't take "I'm ready to join" until faith and baptism are both Yes
-export const canJoin = (answers = {}, requireBaptism = true) => !requireBaptism || (answers.faith === "Yes" && answers.bapt === "Yes");
+// Owner, 23 Oct 2026 (replaces "not ready yet until baptized"): following Jesus comes first. Someone who has trusted
+// Jesus but isn't baptized can still say yes; they join after baptism, and their Faith commitment says so.
+export const canJoin = (answers = {}, requireBaptism = true) => !requireBaptism || answers.faith === "Yes";
+export const joinsAfterBaptism = (answers = {}, requireBaptism = true) => requireBaptism && answers.faith === "Yes" && answers.bapt !== "Yes";
+export const AFTER_BAPTISM_FAITH = "I have trusted Jesus, and I want to be baptized as a believer.";
 
 // ---------- Church settings editing (owner, 23 Oct 2026: teams and commitments are each church's own; questions and gifts stay fixed) ----------
 const clip = (s, n) => String(s ?? "").trim().slice(0, n);
