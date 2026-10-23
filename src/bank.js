@@ -111,4 +111,5 @@ export const PINEWOOD_BELIEFS = [
   { word: "Last Things", text: "Jesus will return visibly, raise the dead and judge the world. His people will live with him forever.", verse: "1 Thessalonians 4:14–18" },
 ];
 
-export const ROLE_NAMES = { admin: "Admin", staff: "Staff", leader: "Interview leader", team_lead: "Team lead", prayer: "Prayer team" };
+// Three access levels, highest first
+export const ROLE_NAMES = { admin: "Administrator", staff: "Staff", team_lead: "Team Lead" };

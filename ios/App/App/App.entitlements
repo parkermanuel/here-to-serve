@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Staff push notifications (new class submissions, overdue next steps) -->
+	<key>aps-environment</key>
+	<string>production</string>
+	<!-- Links to heretoserve.app (class codes, staff sign-in) open in the app -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:heretoserve.app</string>
+	</array>
+</dict>
+</plist>

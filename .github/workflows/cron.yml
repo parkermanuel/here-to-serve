@@ -1,0 +1,21 @@
+name: Every 15 minutes
+# Planning Center sync and staff phone notifications. Does nothing until CRON_SECRET is set.
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+    steps:
+      - name: Planning Center sync
+        if: env.CRON_SECRET != '' && env.SUPABASE_PROJECT_REF != ''
+        run: curl -fsS -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/hts-pco-sync" -H "x-cron-secret: $CRON_SECRET" -H "Content-Type: application/json" -d '{}'
+      - name: Staff notifications
+        if: env.CRON_SECRET != '' && env.SUPABASE_PROJECT_REF != ''
+        run: curl -fsS -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/hts-notify" -H "x-cron-secret: $CRON_SECRET" -H "Content-Type: application/json" -d '{}'

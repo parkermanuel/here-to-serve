@@ -1,0 +1,87 @@
+name: Deploy Here To Serve
+# On every push to main: run the checks, update the database and server functions (once their secrets are set),
+# then publish the website. The phone app is built separately (ios.yml).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm test
+
+  backend:
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      SITE_URL: ${{ vars.SITE_URL }}
+      PCO_CLIENT_ID: ${{ vars.PCO_CLIENT_ID }}
+      PCO_CLIENT_SECRET: ${{ secrets.PCO_CLIENT_SECRET }}
+      CRON_SECRET: ${{ secrets.CRON_SECRET }}
+      APNS_KEY_P8: ${{ secrets.APNS_KEY_P8 }}
+      APNS_KEY_ID: ${{ vars.APNS_KEY_ID }}
+      APNS_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update the database
+        if: env.SUPABASE_DB_URL != ''
+        run: |
+          sudo apt-get install -y -qq postgresql-client >/dev/null
+          psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -q -f supabase/setup.sql
+      - uses: supabase/setup-cli@v1
+        if: env.SUPABASE_ACCESS_TOKEN != '' && env.SUPABASE_PROJECT_REF != ''
+        with:
+          version: 2.121.0
+      - name: Deploy the server functions
+        if: env.SUPABASE_ACCESS_TOKEN != '' && env.SUPABASE_PROJECT_REF != ''
+        run: |
+          # The functions check who's calling themselves (Administrator/Staff sign-in, or the scheduled job's CRON_SECRET)
+          for f in hts-pco-callback hts-pco-sync hts-notify; do
+            supabase functions deploy "$f" --project-ref "$SUPABASE_PROJECT_REF" --use-api --no-verify-jwt
+          done
+      - name: Set the server functions' secrets
+        if: env.SUPABASE_ACCESS_TOKEN != '' && env.SUPABASE_PROJECT_REF != ''
+        run: |
+          set -- SITE_URL="${SITE_URL:-https://heretoserve.app}" APNS_TOPIC="app.heretoserve"
+          [ -n "$PCO_CLIENT_ID" ] && set -- "$@" PCO_CLIENT_ID="$PCO_CLIENT_ID"
+          [ -n "$PCO_CLIENT_SECRET" ] && set -- "$@" PCO_CLIENT_SECRET="$PCO_CLIENT_SECRET"
+          [ -n "$CRON_SECRET" ] && set -- "$@" CRON_SECRET="$CRON_SECRET"
+          [ -n "$APNS_KEY_ID" ] && set -- "$@" APNS_KEY_ID="$APNS_KEY_ID"
+          [ -n "$APNS_TEAM_ID" ] && set -- "$@" APNS_TEAM_ID="$APNS_TEAM_ID"
+          [ -n "$APNS_KEY_P8" ] && set -- "$@" APNS_KEY_P8="$APNS_KEY_P8"
+          supabase secrets set --project-ref "$SUPABASE_PROJECT_REF" "$@"
+
+  site:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node build.mjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+      - id: deployment
+        uses: actions/deploy-pages@v4

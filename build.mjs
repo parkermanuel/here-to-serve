@@ -2,7 +2,7 @@
 // The same dist/ is what the iOS and Android apps load (Capacitor), so there's one codebase.
 import { build } from "esbuild";
 import { createHash } from "crypto";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, statSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, cpSync } from "fs";
 
 const cfgPath = process.env.HTS_CONFIG || "config.json";
 const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, "utf8")) : {};
@@ -13,7 +13,8 @@ cfg.siteUrl ||= process.env.SITE_URL || "";
 const out = await build({ entryPoints: ["src/app.js"], bundle: true, format: "iife", minify: true, write: false, target: "es2020", legalComments: "none" });
 const js = out.outputFiles[0].text.replace(/<\/script/gi, "<\\/script");
 const css = readFileSync("src/styles.css", "utf8");
-const cfgScript = `window.HTS_CONFIG=${JSON.stringify(cfg)};`;
+const pub = { supabaseUrl: cfg.supabaseUrl, supabaseAnonKey: cfg.supabaseAnonKey, siteUrl: cfg.siteUrl, pcoClientId: cfg.pcoClientId || "" };
+const cfgScript = `window.HTS_CONFIG=${JSON.stringify(pub)};`;
 const sha = (t) => "'sha256-" + createHash("sha256").update(t).digest("base64") + "'";
 let sbHost = ""; try { sbHost = new URL(cfg.supabaseUrl).host; } catch {}
 // Only our own two scripts may run; data only goes to our database. Church logos can come from any https site.
@@ -44,6 +45,11 @@ const html = `<!doctype html>
 mkdirSync("dist", { recursive: true });
 writeFileSync("dist/index.html", html);
 writeFileSync("dist/404.html", html);
-for (const f of existsSync("public") ? readdirSync("public") : []) if (statSync("public/" + f).isFile()) copyFileSync("public/" + f, "dist/" + f);
+if (existsSync("public")) cpSync("public", "dist", { recursive: true });
+// Universal links: heretoserve.app links (class codes, staff sign-in) open in the iPhone app once the Apple Team ID is set
+if (cfg.appleTeamId) {
+  mkdirSync("dist/.well-known", { recursive: true });
+  writeFileSync("dist/.well-known/apple-app-site-association", JSON.stringify({ applinks: { details: [{ appIDs: [`${cfg.appleTeamId}.app.heretoserve`], components: [{ "/": "/*" }] }] } }));
+}
 if (cfg.domain) writeFileSync("dist/CNAME", cfg.domain + "\n");
 console.log(`built dist/index.html ${(html.length / 1024).toFixed(0)}KB, live=${!!(cfg.supabaseUrl && cfg.supabaseAnonKey)}`);

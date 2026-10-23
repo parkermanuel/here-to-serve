@@ -1,6 +1,7 @@
 // Scoring checks. Run before every deploy.
 import { PAIRS, GIFT_KEYS, DEFAULT_TEAMS, PINEWOOD_BELIEFS, DEFAULT_COMMITMENTS } from "../src/bank.js";
 import { countGifts, topGifts, recommendTeams, results, staffSteps, memberSteps } from "../src/engine.js";
+import { classCodeFrom } from "../src/native.js";
 
 let fail = 0;
 const ok = (c, m) => { console.log(c ? "ok -" : "FAIL -", m); if (!c) fail++; };
@@ -44,5 +45,9 @@ ok(memberSteps({ group: "Yes", when: "Sundays" }).length === 1, "a grouped, read
 ok(DEFAULT_COMMITMENTS.length === 8 && PINEWOOD_BELIEFS.length === 12, "8 commitments, 12 belief lines");
 ok(PINEWOOD_BELIEFS.some((b) => /for every believer/.test(b.text)), "communion line says it's for every believer");
 ok(recommendTeams(s, [], []).length === 0, "no teams, no recommendations");
+
+// The phone app's QR scanner only accepts class codes
+ok(classCodeFrom("https://heretoserve.app/#/j/ab12cd34ef56") === "ab12cd34ef56" && classCodeFrom("ab12cd34ef56") === "ab12cd34ef56", "scanner reads a class link or a bare code");
+ok(classCodeFrom("https://example.com/login") === null, "scanner ignores anything that isn't a class code");
 
 process.exit(fail ? 1 : 0);

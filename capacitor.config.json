@@ -1,0 +1,10 @@
+{
+  "appId": "app.heretoserve",
+  "appName": "Here To Serve",
+  "webDir": "dist",
+  "ios": { "contentInset": "always", "scheme": "Here To Serve" },
+  "android": { "allowMixedContent": false },
+  "plugins": {
+    "PushNotifications": { "presentationOptions": ["badge", "sound", "alert"] }
+  }
+}

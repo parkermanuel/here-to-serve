@@ -1,0 +1,40 @@
+name: iPhone app to TestFlight
+# Builds the iPhone app on a Mac runner and uploads it to TestFlight. Run it from the Actions tab, or push a tag like v1.0.0.
+# Does nothing until the App Store Connect API key secrets are set (see SETUP.md, "Phone app").
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  testflight:
+    runs-on: macos-15
+    env:
+      ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
+      ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - name: Check the App Store secrets
+        id: gate
+        run: |
+          if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] && [ -n "$ASC_KEY_P8" ] && [ -n "$APPLE_TEAM_ID" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "App Store secrets not set yet; skipping."; echo "go=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.go == 'true'
+        with:
+          node-version: 22
+      - name: Build the web app and copy it into the iPhone project
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          npm ci
+          node build.mjs
+          npx cap sync ios
+      - name: Build, sign and upload to TestFlight
+        if: steps.gate.outputs.go == 'true'
+        run: |
+          echo "$ASC_KEY_P8" > "$RUNNER_TEMP/asc.p8"
+          export ASC_KEY_PATH="$RUNNER_TEMP/asc.p8" BUILD_NUMBER="${{ github.run_number }}"
+          fastlane ios beta

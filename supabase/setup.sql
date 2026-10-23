@@ -158,6 +158,7 @@ create table if not exists public.members (
 alter table public.members add column if not exists first_sunday date;
 alter table public.members add column if not exists pco_person_id text;
 alter table public.members add column if not exists pco_synced_at timestamptz;
+alter table public.members add column if not exists pco_noted text;  -- the decision already written as a note in Planning Center
 create index if not exists members_church_idx on public.members(church_id, created_at desc);
 create index if not exists members_class_idx on public.members(class_id);
 

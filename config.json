@@ -2,5 +2,7 @@
   "supabaseUrl": "https://lfeypyanuqagvuuqothd.supabase.co",
   "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxmZXlweWFudXFhZ3Z1dXFvdGhkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI3NTkyNzMsImV4cCI6MjEwODMzNTI3M30.CcRwedcHgndiwPzOs3N3XEcqj_Cds2byIwwa0_aLojY",
   "siteUrl": "https://heretoserve.app",
-  "domain": "heretoserve.app"
+  "domain": "heretoserve.app",
+  "pcoClientId": "",
+  "appleTeamId": ""
 }
