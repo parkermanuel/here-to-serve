@@ -71,3 +71,45 @@ export function staffSteps(answers = {}, decision, recTeams = [], teams = []) {
   if (seasonFull) add("season", "Check back in when their season opens up", "Next steps pastor", 60);
   return out;
 }
+
+// ---------- Church settings editing (owner, 23 Oct 2026: teams and commitments are each church's own; questions and gifts stay fixed) ----------
+const clip = (s, n) => String(s ?? "").trim().slice(0, n);
+const slug = (s) => clip(s, 40).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+/** Cleans the team list a church saves. Keeps each team's passions (boosts) by its original name. */
+export function cleanTeams(rows = [], prev = [], giftKeys = []) {
+  const byName = new Map(prev.map((t) => [t.name, t]));
+  const out = [], names = new Set();
+  for (const r of rows) {
+    if (r.remove) continue;
+    const name = clip(r.name, 40);
+    if (!name) continue;
+    if (names.has(name.toLowerCase())) return { error: `"${name}" is listed twice. Give each team its own name.` };
+    names.add(name.toLowerCase());
+    const gifts = [...new Set((r.gifts || []).filter((g) => giftKeys.includes(g)))].slice(0, 3);
+    if (!gifts.length) return { error: `Pick at least one gift for ${name}.` };
+    const old = byName.get(r.orig || name);
+    out.push({ name, gifts, boosts: old?.boosts || [], check: !!r.check });
+  }
+  if (!out.length) return { error: "Keep at least one team." };
+  if (out.length > 30) return { error: "That's more than 30 teams. Combine a few." };
+  return { teams: out };
+}
+
+/** Reads commitments typed one per line as "Word | Statement | Passage". Keeps existing keys so past members stay matched. */
+export function parseCommitments(text = "", prev = []) {
+  const byWord = new Map(prev.map((c) => [c.word.toLowerCase(), c.k]));
+  const out = [], keys = new Set();
+  for (const line of String(text).split("\n")) {
+    const [w, s, v] = line.split("|").map((x) => x.trim());
+    if (!w && !s) continue;
+    if (!w || !s) return { error: `Each line needs a word and a statement: "${clip(line, 40)}"` };
+    let k = byWord.get(w.toLowerCase()) || slug(w) || `c${out.length + 1}`;
+    while (keys.has(k)) k += "-2";
+    keys.add(k);
+    out.push({ k, word: clip(w, 30), statement: clip(s, 200), verse: clip(v, 80) });
+  }
+  if (!out.length) return { error: "Keep at least one commitment." };
+  if (out.length > 12) return { error: "Keep it to 12 commitments or fewer." };
+  return { commitments: out };
+}
