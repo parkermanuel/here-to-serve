@@ -15,7 +15,9 @@ jobs:
     steps:
       - name: People system sync (Planning Center or Breeze)
         if: env.CRON_SECRET != '' && env.SUPABASE_PROJECT_REF != ''
-        run: curl -fsS -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/hts-sync" -H "x-cron-secret: $CRON_SECRET" -H "Content-Type: application/json" -d '{}'
+        run: |
+          curl -fsS -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/hts-sync" -H "x-cron-secret: $CRON_SECRET" -H "Content-Type: application/json" -d '{}'
       - name: Staff notifications
         if: env.CRON_SECRET != '' && env.SUPABASE_PROJECT_REF != ''
-        run: curl -fsS -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/hts-notify" -H "x-cron-secret: $CRON_SECRET" -H "Content-Type: application/json" -d '{}'
+        run: |
+          curl -fsS -X POST "https://$SUPABASE_PROJECT_REF.supabase.co/functions/v1/hts-notify" -H "x-cron-secret: $CRON_SECRET" -H "Content-Type: application/json" -d '{}'
