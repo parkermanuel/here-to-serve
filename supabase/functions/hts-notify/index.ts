@@ -27,6 +27,14 @@ Deno.serve(async (req) => {
       if (!s || s.done_at) { await db.from("notify_queue").update({ sent_at: new Date().toISOString() }).eq("id", it.id); continue; }
       if (s.owner_user) users = [s.owner_user];
     }
+    // Approved to join: the Team Leads of the team they're headed to
+    if (it.kind === "handoff") {
+      const { data: m } = await db.from("members").select("team, rec_teams").eq("id", it.member_id).maybeSingle();
+      const team = m?.team || m?.rec_teams?.[0];
+      const { data: leads } = team ? await db.from("staff").select("user_id").eq("church_id", it.church_id).eq("role", "team_lead").contains("teams", [team]) : { data: [] };
+      users = (leads || []).map((r) => r.user_id);
+      if (!users.length) { await db.from("notify_queue").update({ sent_at: new Date().toISOString() }).eq("id", it.id); continue; }
+    }
     if (!users.length) {
       const { data: st } = await db.from("staff").select("user_id").eq("church_id", it.church_id).in("role", ["admin", "staff"]);
       users = (st || []).map((r) => r.user_id);
@@ -35,7 +43,7 @@ Deno.serve(async (req) => {
     const { data: devs } = users.length ? await db.from("devices").select("token, platform").in("user_id", users).eq("platform", "ios") : { data: [] };
     const msg = message(it.kind, church?.name);
     for (const d of devs || []) {
-      const r = await sendApns({ token, deviceToken: d.token, topic, production, ...msg, data: { route: it.kind === "overdue" ? "#/s/home" : `#/s/person/${it.member_id}` } });
+      const r = await sendApns({ token, deviceToken: d.token, topic, production, ...msg, data: { route: it.kind === "overdue" ? "#/s/home" : it.kind === "handoff" ? "#/s/handoff" : `#/s/person/${it.member_id}` } });
       if (r === "gone") await db.from("devices").delete().eq("token", d.token);
       if (r === "ok") sent++;
     }

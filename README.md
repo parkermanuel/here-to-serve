@@ -1,6 +1,6 @@
 # Here To Serve
 
-Membership class, gifts and next steps for churches. People scan a QR code in class and fill it out on their phones. Staff get a dashboard: who finished, their top gifts and recommended teams, a next steps checklist, prayer requests and a church snapshot. White labeled: each church sees its own name, logo and color.
+Growth Track (membership) class, gifts and next steps for churches. Each church uses its own words for joining ("join the serve team", "become a covenant member"). People scan a QR code in class and fill it out on their phones. Staff get a dashboard: who finished, their top gifts and recommended teams, a next steps checklist, prayer requests and a church snapshot. White labeled: each church sees its own name, logo and color.
 
 ## How it's built
 - A static single-page app in `src/` that esbuild bundles into `dist/index.html`, hosted on GitHub Pages at heretoserve.app.
@@ -9,6 +9,13 @@ Membership class, gifts and next steps for churches. People scan a QR code in cl
 - Members don't need accounts. Scanning the class code gives their phone a random 64-character key, and they reach only their own form through `hts_*` functions.
 - Connections: a church connects one people system, Planning Center (OAuth) or Breeze (subdomain + API key), behind one shared interface (`_shared/connectors.js`). Server functions push new members and pull teams (Services teams or Breeze tags). Tokens and keys never reach a browser.
 - Spreadsheets: Administrators and Staff export people and next steps as CSV; Administrators import team rosters from a CSV with a preview and team-matching step. All through `hts_*` functions.
+
+## How someone joins
+1. They scan the class code and do Part 1, the lead pastor's video, then Part 2 (gifts).
+2. The host pairs them with a one-on-one leader, who uses the one-on-one guide.
+3. They choose "I'm ready to [join]" (and make the commitments) or "I'm not ready yet". If the church requires it, believer's baptism comes first.
+4. They keep their own copy (gifts, teams, commitments, next steps) at their link and can text or email it to themselves.
+5. A pastor approves (or puts on hold with a private note). Only then does the team lead see them, get notified, and set a first Sunday, after any background check is done.
 
 ## Access levels
 | Level | Can do |

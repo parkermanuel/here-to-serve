@@ -37,7 +37,7 @@ function db(level) {
     prayer_requests: () => (meRow.prayer ? [{ id: "p1", member_id: "m1", who: "Daniel B.", body: "Wisdom for a new job", created_at: "2026-10-19T15:00:00Z", prayed_at: null }] : []),
     staff_invites: () => [],
     notes: () => [{ id: "n1", body: "Teacher by trade.", author_name: "Parker", created_at: "2026-10-19T16:00:00Z" }],
-    rpc_hts_handoff: () => [{ member_id: "m1", name: "Daniel Brooks", email: "daniel@x.com", phone: "555", team: "Kids", top_gifts: ["sh", "te", "he"], serve_when: "Sundays", often: "Weekly", first_sunday: null }],
+    rpc_hts_handoff: () => [{ member_id: "m1", name: "Daniel Brooks", email: "daniel@x.com", phone: "555", team: "Kids", top_gifts: ["sh", "te", "he"], serve_when: "Sundays", often: "Weekly", first_sunday: null, check_pending: true }],
     rpc_hts_snapshot: () => ({ people: 1, gifts: { sh: 1, te: 1, he: 1 }, teams: DEFAULT_TEAMS.map((t) => ({ name: t.name, serving: t.name === "Kids" ? 3 : 0, fromSource: t.name === "Kids", gifted: 1 })), source: "breeze" }),
     rpc_hts_conn_status: () => ({ connected: true, system: "breeze", orgName: "Pinewood", connectedAt: "2026-10-20T10:00:00Z", source: "breeze", queued: 0, runs: level === "admin" ? [{ system: "breeze", kind: "pull", started_at: "2026-10-23T12:00:00Z", ok: true, pushed: 0, pulled: 12, error: null }] : [], map: [{ source: "breeze", extTeamId: "42", extTeamName: "Volunteers › Kids Check-in", htsTeam: "Kids", people: 12 }, { source: "breeze", extTeamId: "43", extTeamName: "Volunteers › Band", htsTeam: null, people: 0 }] }),
     rpc_hts_export_people: () => [{ first_name: "Daniel", last_name: "Brooks", email: "daniel@x.com", phone: "555", membership_status: "Member", gift_1: "Shepherding", gift_1_score: 5, recommended_team: "Kids", open_next_steps: "=cmd" }],
@@ -91,7 +91,22 @@ await asLevel("admin", [
   ["#/s/settings", "Connected: Breeze", "settings shows which system is connected"],
   ["#/s/settings", "Match your tags", "Breeze tags to match to teams"],
   ["#/s/account", "Delete my account", "account deletion"],
+  ["#/s/home", "Waiting for approval", "Today lists people waiting for a pastor's approval"],
+  ["#/s/person/m1", "Talk about this before approving", "person page flags faith and baptism before approving"],
+  ["#/s/person/m1", "One-on-one guide", "person page shows the one-on-one guide while waiting"],
+  ["#/s/class/" + K, "Run the class", "class page has the host's run sheet"],
+  ["#/s/class/" + K, "One-on-one with", "class page pairs people with one-on-one leaders"],
+  ["#/s/settings", "What do you call joining?", "settings: the church's own words for joining"],
+  ["#/s/settings", "Who owns each next step", "settings: step owners"],
 ], async (page, calls) => {
+  await page.goto(base + "/#/s/person/m1"); await page.waitForSelector("text=Approve joining");
+  await page.click('section [data-act="approve"]'); await page.waitForTimeout(300);
+  ok(calls.some(([k, b]) => k === "rpc_hts_approve" && b.p_member === "m1" && b.p_ok === true), "admin: Approve sends the approval");
+  await page.fill('[data-form="hold"] input[name="note"]', "Talk about baptism first"); await page.click('[data-form="hold"] button[type="submit"]'); await page.waitForTimeout(300);
+  ok(calls.some(([k, b]) => k === "rpc_hts_approve" && b.p_ok === false && b.p_note === "Talk about baptism first"), "admin: Put on hold sends the private note");
+  await page.goto(base + "/#/s/class/" + K); await page.waitForSelector("text=Run the class");
+  await page.selectOption('[data-act-change="interviewer"][data-id="m1"]', TLU); await page.waitForTimeout(300);
+  ok(calls.some(([k, b]) => k === "rpc_hts_set_interviewer" && b.p_member === "m1" && b.p_user === TLU), "admin: pairing a one-on-one leader is saved");
   // Export: a real CSV download, formulas neutralized
   await page.goto(base + "/#/s/people"); await page.waitForSelector("text=Export to a spreadsheet");
   await page.selectOption('[data-act-change="export-filter"]', "joined");
@@ -125,6 +140,7 @@ await asLevel("staff", [
 await asLevel("team_lead", [
   ["#/s/handoff", "Kids: new people", "their team's handoff"],
   ["#/s/handoff", "Assigned to you", "steps assigned to them"],
+  ["#/s/handoff", "Background check pending", "a pending background check blocks the first Sunday"],
   ["#/s/people", "Kids: new people", "no People list (lands on their team)"],
   ["#/s/prayer", "Kids: new people", "no prayer without prayer access"],
 ], async (page) => {

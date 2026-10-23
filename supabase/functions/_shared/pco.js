@@ -98,13 +98,17 @@ export function splitName(full = "") {
 }
 const digits = (s) => String(s || "").replace(/\D/g, "").slice(-10);
 
+// Where someone is: "joined" only once a pastor approves (owner, 23 Oct 2026), "pending" while waiting or on hold
+export const stage = (m) => (m.decision === "joining" ? (m.approved_at ? "joined" : "pending") : m.decision === "not_ready" ? "not_ready" : null);
+
 // What we write into the "Here To Serve" fields for one person
 export function fieldValues(m) {
   const gifts = (m.gifts_override?.length ? m.gifts_override : m.top_gifts || []).map((g) => GIFT_NAMES[g] || g);
   const team = m.team || (m.rec_teams || [])[0] || "";
-  const membership = m.decision === "joining"
-    ? `Member since ${String(m.submitted_at || "").slice(0, 10)}`
-    : m.decision === "not_ready" ? "Took the class, not ready to join yet" : "";
+  const st = stage(m);
+  const membership = st === "joined" ? `Joined ${String(m.approved_at || m.submitted_at || "").slice(0, 10)}`
+    : st === "pending" ? (m.held_at ? "Chose to join, on hold" : "Chose to join, waiting for approval")
+    : st === "not_ready" ? "Took the class, not ready to join yet" : "";
   return {
     [FIELDS.gifts]: gifts.join(", "),
     [FIELDS.team]: team,
@@ -115,9 +119,9 @@ export function fieldValues(m) {
 
 export function noteText(m, commitments = []) {
   const date = String(m.submitted_at || "").slice(0, 10);
-  if (m.decision === "joining") {
+  if (stage(m) === "joined") {
     const words = commitments.filter((c) => m.commitments?.[c.k]).map((c) => c.word);
-    return `Here To Serve: joined on ${date} and made the membership commitments (${words.join(", ")}).`;
+    return `Here To Serve: took the class on ${date}, made the commitments (${words.join(", ")}) and was approved to join on ${String(m.approved_at || "").slice(0, 10)}.`;
   }
   return `Here To Serve: finished membership class on ${date} and isn't ready to join yet.`;
 }
@@ -199,9 +203,11 @@ export async function pushMember(client, ids, m, commitments, state = {}) {
     }
   }
   let noted = personId === m.ext_person_id ? state.noted || null : null;
-  if (m.decision && noted !== m.decision) {
+  // One note when they're approved to join, or when they say they're not ready yet. Never while waiting for approval.
+  const st = stage(m);
+  if ((st === "joined" || st === "not_ready") && noted !== st) {
     await client.post(PATH.createNote(personId), { data: { type: "Note", attributes: { note: noteText(m, commitments), note_category_id: ids.noteCategory } } });
-    noted = m.decision;
+    noted = st;
   }
   return { personId, state: { ...state, noted } };
 }

@@ -50,7 +50,9 @@ create or replace function public.hts_default_settings() returns jsonb language 
       {"k":"invite","word":"Invite","statement":"I will invite others to meet Jesus.","verse":"Matthew 28:19"}
     ]'::jsonb,
     'beliefs', '[]'::jsonb,
-    'requireBaptism', true)
+    'requireBaptism', true,
+    -- What this church calls joining (owner, 23 Oct 2026: every church has its own words; Pinewood says "join the serve team")
+    'joinTerm', 'join the serve team')
 $$;
 
 
@@ -162,6 +164,13 @@ alter table public.members add column if not exists ext_system text;
 alter table public.members add column if not exists ext_person_id text;
 alter table public.members add column if not exists ext_synced_at timestamptz;
 alter table public.members add column if not exists ext_state jsonb not null default '{}'::jsonb;
+-- Pastor approval (owner, 23 Oct 2026): "I'm ready to join" waits for a pastor to approve after the one-on-one, or to put it on hold
+alter table public.members add column if not exists approved_at timestamptz;
+alter table public.members add column if not exists approved_by uuid references auth.users(id) on delete set null;
+alter table public.members add column if not exists held_at timestamptz;
+alter table public.members add column if not exists hold_note text;
+-- The one-on-one leader the class host paired with this person
+alter table public.members add column if not exists interviewer uuid references auth.users(id) on delete set null;
 alter table public.members drop column if exists pco_person_id;
 alter table public.members drop column if exists pco_synced_at;
 alter table public.members drop column if exists pco_noted;
@@ -292,13 +301,15 @@ create table if not exists public.devices (
 create table if not exists public.notify_queue (
   id bigint generated always as identity primary key,
   church_id uuid not null references public.churches(id) on delete cascade,
-  kind text not null check (kind in ('submitted', 'overdue')),
+  kind text not null,
   member_id uuid references public.members(id) on delete cascade,
   step_id uuid references public.next_steps(id) on delete cascade,
   created_at timestamptz not null default now(),
   sent_at timestamptz
 );
 create unique index if not exists notify_overdue_once on public.notify_queue(step_id) where kind = 'overdue';
+alter table public.notify_queue drop constraint if exists notify_queue_kind_check;
+alter table public.notify_queue add constraint notify_queue_kind_check check (kind in ('submitted', 'overdue', 'handoff'));
 
 -- ============ Access checks (used by security rules and functions) ============
 create or replace function public.hts_role(p_church uuid) returns text language sql stable security definer set search_path = public as $$
@@ -336,7 +347,7 @@ create or replace function public.hts_can_member(p_member uuid) returns boolean 
 $$;
 -- The person is headed to one of this Team Lead's teams
 create or replace function public.hts_on_my_team(p_member uuid) returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.members m where m.id = p_member and m.status = 'submitted'
+  select exists (select 1 from public.members m where m.id = p_member and m.status = 'submitted' and m.approved_at is not null
                  and coalesce(m.team, m.rec_teams[1]) = any(public.hts_my_teams(m.church_id)))
 $$;
 
@@ -559,7 +570,9 @@ end $$;
 create or replace function public.hts_church_header(p_church uuid, p_class uuid) returns jsonb language sql stable security definer set search_path = public as $$
   select jsonb_build_object('name', c.name, 'logoUrl', c.logo_url, 'accent', c.accent,
     'teams', coalesce(c.settings->'teams', '[]'::jsonb), 'commitments', coalesce(c.settings->'commitments', '[]'::jsonb),
-    'beliefs', coalesce(c.settings->'beliefs', '[]'::jsonb), 'className', k.name)
+    'beliefs', coalesce(c.settings->'beliefs', '[]'::jsonb), 'className', k.name,
+    'joinTerm', coalesce(nullif(c.settings->>'joinTerm', ''), 'join the serve team'),
+    'requireBaptism', coalesce((c.settings->>'requireBaptism')::boolean, true))
   from public.churches c left join public.classes k on k.id = p_class
   where c.id = p_church
 $$;
@@ -580,7 +593,12 @@ create or replace function public.hts_open(p_key text) returns jsonb language sq
     'member', jsonb_build_object('status', m.status, 'step', m.step, 'answers', m.answers, 'picks', m.picks, 'decision', m.decision,
                                  'adult', m.adult_at is not null,
                                  -- a prayer request goes back only while the form is still open, to the same device that wrote it
-                                 'prayer', case when m.status = 'started' then (select body from public.prayer_requests where member_id = m.id) end),
+                                 'prayer', case when m.status = 'started' then (select body from public.prayer_requests where member_id = m.id) end,
+                                 -- their own copy after they submit: gifts, teams, commitments and status
+                                 'name', m.name, 'email', m.email, 'phone', m.phone,
+                                 'scores', m.scores, 'topGifts', coalesce(m.gifts_override, m.top_gifts), 'recTeams', m.rec_teams, 'team', m.team,
+                                 'commitments', m.commitments, 'submittedAt', m.submitted_at,
+                                 'approved', m.approved_at is not null, 'firstSunday', m.first_sunday),
     'church', public.hts_church_header(m.church_id, m.class_id))
   from public.members m where m.key = p_key and length(p_key) = 64
 $$;
@@ -653,32 +671,102 @@ create or replace function public.hts_recommend(p_scores jsonb, p_tapped jsonb, 
     order by total desc, o limit 2) r
 $$;
 
--- The staff's next steps for a submitted member. Mirrors staffSteps in src/engine.js (tested to agree).
-create or replace function public.hts_make_steps(p_member uuid) returns int language plpgsql security definer set search_path = public as $$
-declare m public.members; c public.churches; a jsonb; first text; season_full boolean; chk boolean; n int := 0;
+-- Who owns a step: the person the church picked for that kind of step in Settings (if they're still on the team)
+create or replace function public.hts_step_owner(p_church uuid, p_kind text) returns uuid language sql stable security definer set search_path = public as $$
+  select s.user_id from public.churches c join public.staff s on s.church_id = c.id and s.user_id::text = c.settings->'stepOwners'->>p_kind
+  where c.id = p_church
+$$;
+-- A team's lead: the first Team Lead on that team, else whoever owns team introductions in Settings
+create or replace function public.hts_team_lead(p_church uuid, p_team text) returns uuid language sql stable security definer set search_path = public as $$
+  select coalesce((select user_id from public.staff where church_id = p_church and role = 'team_lead' and p_team = any(teams) order by created_at limit 1),
+                  public.hts_step_owner(p_church, 'team'))
+$$;
+
+-- Team steps (background check, then the team lead introduction). Only once a pastor has approved them joining,
+-- and redone when a leader changes their team.
+create or replace function public.hts_team_steps(p_member uuid) returns void language plpgsql security definer set search_path = public as $$
+declare m public.members; c public.churches; t text; chk boolean;
 begin
   select * into m from public.members where id = p_member;
   select * into c from public.churches where id = m.church_id;
+  delete from public.next_steps where member_id = m.id and done_at is null and kind in ('team', 'check');
+  t := coalesce(m.team, m.rec_teams[1]);
+  if t is null or m.decision <> 'joining' or m.approved_at is null or (m.answers->>'when') = 'My season is full right now' then return; end if;
+  chk := exists (select 1 from jsonb_array_elements(c.settings->'teams') x where x->>'name' = t and (x->>'check')::boolean);
+  -- a check already done for this person counts for any team
+  if chk and not exists (select 1 from public.next_steps where member_id = m.id and kind = 'check' and done_at is not null) then
+    insert into public.next_steps(church_id, member_id, kind, title, owner_label, owner_user, due)
+    values (m.church_id, m.id, 'check', 'Background check for ' || t, 'Next steps pastor', public.hts_step_owner(m.church_id, 'check'), current_date + 5);
+  end if;
+  insert into public.next_steps(church_id, member_id, kind, title, owner_label, owner_user, due)
+  values (m.church_id, m.id, 'team', 'Introduce to the ' || t || ' team lead', t || ' lead', public.hts_team_lead(m.church_id, t), current_date + 7);
+end $$;
+
+-- The staff's next steps for a submitted member. Mirrors staffSteps in src/engine.js (tested to agree).
+create or replace function public.hts_make_steps(p_member uuid) returns int language plpgsql security definer set search_path = public as $$
+declare m public.members; a jsonb; season_full boolean; n int := 0;
+  add_step text := 'insert into public.next_steps(church_id, member_id, kind, title, owner_label, owner_user, due) values ($1, $2, $3, $4, $5, public.hts_step_owner($1, $3), current_date + $6)';
+begin
+  select * into m from public.members where id = p_member;
   a := m.answers;
-  first := m.rec_teams[1];
   season_full := (a->>'when') = 'My season is full right now';
-  chk := exists (select 1 from jsonb_array_elements(c.settings->'teams') t where t->>'name' = first and (t->>'check')::boolean);
-  delete from public.next_steps where member_id = m.id and done_at is null;
-  if (a->>'faith') in ('Not yet', 'Not sure') then
-    insert into public.next_steps(church_id, member_id, kind, title, owner_label, due) values (m.church_id, m.id, 'faith', 'Talk about following Jesus', 'Next steps pastor', current_date + 3); n := n + 1; end if;
-  if (a->>'bapt') in ('Not yet', 'I''d like to talk about it') then
-    insert into public.next_steps(church_id, member_id, kind, title, owner_label, due) values (m.church_id, m.id, 'baptism', 'Baptism conversation', 'Next steps pastor', current_date + 3); n := n + 1; end if;
-  if first is not null and not season_full and chk and m.decision = 'joining' then
-    insert into public.next_steps(church_id, member_id, kind, title, owner_label, due) values (m.church_id, m.id, 'check', 'Background check for ' || first, 'Next steps pastor', current_date + 5); n := n + 1; end if;
-  if first is not null and not season_full and m.decision = 'joining' then
-    insert into public.next_steps(church_id, member_id, kind, title, owner_label, due) values (m.church_id, m.id, 'team', 'Introduce to the ' || first || ' team lead', first || ' lead', current_date + 5); n := n + 1; end if;
-  if coalesce(a->>'group', '') <> 'Yes' then
-    insert into public.next_steps(church_id, member_id, kind, title, owner_label, due) values (m.church_id, m.id, 'group', 'Connect to a group', 'Groups pastor', current_date + 7); n := n + 1; end if;
+  delete from public.next_steps where member_id = m.id and done_at is null and kind <> 'custom';
+  if m.decision = 'joining' then
+    execute add_step using m.church_id, m.id, 'approve',
+      'Approve joining after the one-on-one' || case when coalesce(a->>'bapt', '') <> 'Yes' or coalesce(a->>'faith', '') <> 'Yes' then ' (check faith and baptism)' else '' end,
+      'Lead pastor', 3;
+    n := n + 1;
+  end if;
+  if (a->>'faith') in ('Not yet', 'Not sure') then execute add_step using m.church_id, m.id, 'faith', 'Talk about following Jesus', 'Next steps pastor', 3; n := n + 1; end if;
+  if (a->>'bapt') in ('Not yet', 'I''d like to talk about it') then execute add_step using m.church_id, m.id, 'baptism', 'Baptism conversation', 'Next steps pastor', 3; n := n + 1; end if;
+  if coalesce(a->>'group', '') <> 'Yes' then execute add_step using m.church_id, m.id, 'group', 'Connect to a group', 'Groups pastor', 7; n := n + 1; end if;
   if m.decision = 'not_ready' then
-    insert into public.next_steps(church_id, member_id, kind, title, owner_label, due) values (m.church_id, m.id, 'followup', 'Follow up: not ready to join', 'Next steps pastor', current_date + 7); n := n + 1; end if;
-  if season_full then
-    insert into public.next_steps(church_id, member_id, kind, title, owner_label, due) values (m.church_id, m.id, 'season', 'Check back in when their season opens up', 'Next steps pastor', current_date + 60); n := n + 1; end if;
+    execute add_step using m.church_id, m.id, 'followup', 'Follow up: not ready yet', 'Next steps pastor', 7;
+    execute add_step using m.church_id, m.id, 'invite', 'Invite to the next class', 'Next steps pastor', 30;
+    n := n + 2;
+  end if;
+  if season_full then execute add_step using m.church_id, m.id, 'season', 'Check back in when their season opens up', 'Next steps pastor', 60; n := n + 1; end if;
+  perform public.hts_team_steps(m.id);
   return n;
+end $$;
+
+-- A pastor approves someone joining after the one-on-one, or puts it on hold with a private note (Administrator or Staff)
+create or replace function public.hts_approve(p_member uuid, p_ok boolean, p_note text default null) returns void
+language plpgsql security definer set search_path = public as $$
+declare m public.members;
+begin
+  select * into m from public.members where id = p_member for update;
+  if m.id is null or not public.hts_is_core(m.church_id) then raise exception 'Not allowed'; end if;
+  if m.status <> 'submitted' or m.decision <> 'joining' then raise exception 'Only people who chose to join can be approved'; end if;
+  if p_ok then
+    update public.members set approved_at = now(), approved_by = auth.uid(), held_at = null, hold_note = null, updated_at = now() where id = m.id;
+    update public.next_steps set done_at = now() where member_id = m.id and kind in ('approve', 'hold') and done_at is null;
+    perform public.hts_team_steps(m.id);
+    insert into public.notify_queue(church_id, kind, member_id) values (m.church_id, 'handoff', m.id);
+  else
+    update public.members set held_at = now(), approved_at = null, approved_by = null, hold_note = nullif(left(trim(coalesce(p_note, '')), 1000), ''), updated_at = now() where id = m.id;
+    update public.next_steps set done_at = now() where member_id = m.id and kind = 'approve' and done_at is null;
+    perform public.hts_team_steps(m.id);
+    if not exists (select 1 from public.next_steps where member_id = m.id and kind = 'hold' and done_at is null) then
+      insert into public.next_steps(church_id, member_id, kind, title, owner_label, owner_user, due)
+      values (m.church_id, m.id, 'hold', 'Follow up: joining on hold', 'Lead pastor', coalesce(public.hts_step_owner(m.church_id, 'approve'), auth.uid()), current_date + 7);
+    end if;
+  end if;
+end $$;
+
+-- The class host pairs each person with a one-on-one leader (Administrator or Staff)
+create or replace function public.hts_set_interviewer(p_member uuid, p_user uuid) returns void
+language plpgsql security definer set search_path = public as $$
+declare cid uuid := public.hts_member_church(p_member);
+begin
+  if cid is null or not public.hts_is_core(cid) then raise exception 'Not allowed'; end if;
+  if p_user is not null and not exists (select 1 from public.staff where church_id = cid and user_id = p_user) then raise exception 'Pick someone on your team'; end if;
+  update public.members set interviewer = p_user, updated_at = now() where id = p_member;
+  -- a Team Lead paired with someone gets that class's one-on-ones
+  if p_user is not null and exists (select 1 from public.staff where church_id = cid and user_id = p_user and role = 'team_lead') then
+    insert into public.class_leaders(class_id, user_id, church_id) select m.class_id, p_user, cid from public.members m where m.id = p_member and m.class_id is not null
+      on conflict do nothing;
+  end if;
 end $$;
 
 -- Submit: "I'm ready to join" (every commitment checked) or "I'm not ready to join yet"
@@ -694,6 +782,10 @@ begin
     raise exception 'Finish all 33 gift questions first';
   end if;
   select * into c from public.churches where id = m.church_id;
+  if p_decision = 'joining' and coalesce((c.settings->>'requireBaptism')::boolean, true)
+     and (coalesce(m.answers->>'faith', '') <> 'Yes' or coalesce(m.answers->>'bapt', '') <> 'Yes') then
+    raise exception 'Baptism comes first. Choose "I''m not ready yet" and we''ll help you take that step.';
+  end if;
   if p_decision = 'joining' then
     for need in select x->>'k' from jsonb_array_elements(coalesce(c.settings->'commitments', '[]'::jsonb)) x loop
       if not (jsonb_typeof(p_commitments) = 'array' and p_commitments ? need) then raise exception 'Check each commitment to join'; end if;
@@ -723,6 +815,8 @@ begin
   if p_gifts is not null and (cardinality(p_gifts) > 3 or not p_gifts <@ public.hts_gift_keys()) then raise exception 'Pick up to 3 gifts'; end if;
   update public.members set team = nullif(p_team, ''), gifts_override = case when cardinality(p_gifts) = 0 then null else p_gifts end, updated_at = now()
   where id = p_member;
+  -- a new team means a new introduction (and a background check if that team needs one)
+  if exists (select 1 from public.members where id = p_member and status = 'submitted') then perform public.hts_team_steps(p_member); end if;
 end $$;
 
 create or replace function public.hts_add_note(p_member uuid, p_body text) returns uuid
@@ -738,11 +832,12 @@ end $$;
 
 -- A Team Lead's list: people headed to their team(s). Name, contact, gifts, availability. Never notes or prayer.
 drop function if exists public.hts_handoff(uuid);
-create or replace function public.hts_handoff(p_church uuid) returns table(member_id uuid, name text, email text, phone text, team text, top_gifts text[], serve_when text, often text, first_sunday date, submitted_at timestamptz)
+create or replace function public.hts_handoff(p_church uuid) returns table(member_id uuid, name text, email text, phone text, team text, top_gifts text[], serve_when text, often text, first_sunday date, submitted_at timestamptz, check_pending boolean)
 language sql stable security definer set search_path = public as $$
-  select m.id, m.name, m.email, m.phone, coalesce(m.team, m.rec_teams[1]), coalesce(m.gifts_override, m.top_gifts), m.answers->>'when', m.answers->>'often', m.first_sunday, m.submitted_at
+  select m.id, m.name, m.email, m.phone, coalesce(m.team, m.rec_teams[1]), coalesce(m.gifts_override, m.top_gifts), m.answers->>'when', m.answers->>'often', m.first_sunday, m.submitted_at,
+         exists (select 1 from public.next_steps s where s.member_id = m.id and s.kind = 'check' and s.done_at is null)
   from public.members m
-  where m.church_id = p_church and m.status = 'submitted' and m.decision = 'joining'
+  where m.church_id = p_church and m.status = 'submitted' and m.decision = 'joining' and m.approved_at is not null
     and (public.hts_is_core(p_church) or coalesce(m.team, m.rec_teams[1]) = any(public.hts_my_teams(p_church)))
   order by m.first_sunday nulls first, m.submitted_at desc
 $$;
@@ -752,6 +847,10 @@ create or replace function public.hts_set_first_sunday(p_member uuid, p_date dat
 language plpgsql security definer set search_path = public as $$
 begin
   if not (public.hts_is_core(public.hts_member_church(p_member)) or public.hts_on_my_team(p_member)) then raise exception 'Not allowed'; end if;
+  -- a team that needs a background check: no first Sunday until it's done
+  if p_date is not null and exists (select 1 from public.next_steps where member_id = p_member and kind = 'check' and done_at is null) then
+    raise exception 'The background check isn''t done yet. Once it''s marked done, set their first Sunday.';
+  end if;
   update public.members set first_sunday = p_date, updated_at = now() where id = p_member;
   -- the team intro step is done once a first Sunday is on the calendar
   if p_date is not null then update public.next_steps set done_at = coalesce(done_at, now()) where member_id = p_member and kind = 'team'; end if;
@@ -765,21 +864,21 @@ $$;
 
 create or replace function public.hts_snapshot(p_church uuid) returns jsonb language sql stable security definer set search_path = public as $$
   select case when public.hts_is_core(p_church) then jsonb_build_object(
-    'people', (select count(*) from public.members where church_id = p_church and status = 'submitted' and decision = 'joining'),
+    'people', (select count(*) from public.members where church_id = p_church and status = 'submitted' and decision = 'joining' and approved_at is not null),
     'source', public.hts_roster_source(p_church),
     'gifts', (select coalesce(jsonb_object_agg(g, n), '{}'::jsonb) from (
        select g, count(*) n from public.members m, unnest(coalesce(m.gifts_override, m.top_gifts)) g
-       where m.church_id = p_church and m.status = 'submitted' and m.decision = 'joining' group by g) x),
+       where m.church_id = p_church and m.status = 'submitted' and m.decision = 'joining' and m.approved_at is not null group by g) x),
     'teams', (select coalesce(jsonb_agg(jsonb_build_object(
        'name', t->>'name',
        -- serving now: the roster from the connected system (or the last spreadsheet import) when mapped, otherwise people placed here
        'serving', case when exists (select 1 from public.team_map where church_id = p_church and source = public.hts_roster_source(p_church) and hts_team = t->>'name')
                   then (select count(distinct r.person_key) from public.rosters r join public.team_map mp on mp.church_id = r.church_id and mp.source = r.source and mp.ext_team_id = r.ext_team_id
                         where r.church_id = p_church and r.source = public.hts_roster_source(p_church) and mp.hts_team = t->>'name')
-                  else (select count(*) from public.members m where m.church_id = p_church and m.decision = 'joining' and coalesce(m.team, m.rec_teams[1]) = t->>'name' and m.first_sunday is not null) end,
+                  else (select count(*) from public.members m where m.church_id = p_church and m.decision = 'joining' and m.approved_at is not null and coalesce(m.team, m.rec_teams[1]) = t->>'name' and m.first_sunday is not null) end,
        'fromSource', exists (select 1 from public.team_map where church_id = p_church and source = public.hts_roster_source(p_church) and hts_team = t->>'name'),
        -- gifted but not placed: joined members whose top gifts fit this team and who aren't on any team yet
-       'gifted', (select count(*) from public.members m where m.church_id = p_church and m.decision = 'joining' and m.first_sunday is null
+       'gifted', (select count(*) from public.members m where m.church_id = p_church and m.decision = 'joining' and m.approved_at is not null and m.first_sunday is null
                   and coalesce(m.gifts_override, m.top_gifts) && array(select jsonb_array_elements_text(t->'gifts')))
      ) order by o), '[]'::jsonb) from public.churches c, jsonb_array_elements(c.settings->'teams') with ordinality as x(t, o) where c.id = p_church)
   ) end
@@ -852,7 +951,7 @@ begin
   if new.status = 'submitted' and exists (select 1 from public.connections where church_id = new.church_id)
      and (tg_op = 'INSERT' or old.status is distinct from new.status or old.team is distinct from new.team
           or old.gifts_override is distinct from new.gifts_override or old.decision is distinct from new.decision
-          or old.first_sunday is distinct from new.first_sunday) then
+          or old.first_sunday is distinct from new.first_sunday or old.approved_at is distinct from new.approved_at or old.held_at is distinct from new.held_at) then
     insert into public.sync_queue(member_id, church_id) values (new.id, new.church_id)
       on conflict (member_id) do update set queued_at = now(), tries = 0, last_error = null;
   end if;
@@ -887,7 +986,8 @@ begin
     nullif(trim(substr(trim(coalesce(m.name, '')), length(split_part(trim(coalesce(m.name, '')), ' ', 1)) + 1)), ''),
     m.email, m.phone, m.answers->>'married', m.answers->>'kids', m.answers->>'kidsAges',
     m.answers->>'faith', m.answers->>'bapt', m.answers->>'group', m.answers->>'found',
-    case when m.status <> 'submitted' then 'In progress' when m.decision = 'joining' then 'Member' else 'Not ready yet' end,
+    case when m.status <> 'submitted' then 'In progress' when m.decision = 'joining' and m.approved_at is not null then 'Joined'
+         when m.decision = 'joining' and m.held_at is not null then 'On hold' when m.decision = 'joining' then 'Waiting for approval' else 'Not ready yet' end,
     m.submitted_at::date,
     public.hts_gift_name(g.gifts[1]), (g.scores->>g.gifts[1])::int,
     public.hts_gift_name(g.gifts[2]), (g.scores->>g.gifts[2])::int,
@@ -900,7 +1000,7 @@ begin
   from public.members m join g on g.id = m.id left join public.classes k on k.id = m.class_id
   where m.church_id = p_church
     and (p_class is null or m.class_id = p_class)
-    and (p_filter = 'all' or (p_filter = 'joined' and m.decision = 'joining') or (p_filter = 'not_ready' and m.decision = 'not_ready')
+    and (p_filter = 'all' or (p_filter = 'joined' and m.decision = 'joining' and m.approved_at is not null) or (p_filter = 'not_ready' and m.decision = 'not_ready')
          or (p_filter = 'in_progress' and m.status <> 'submitted'))
   order by m.created_at;
 end $$;
@@ -999,6 +1099,8 @@ create or replace function public.hts_queue_overdue() returns int language sql s
   select count(*)::int from ins
 $$;
 revoke execute on function public.hts_queue_overdue() from public, anon, authenticated;
+-- Only the database's own functions create steps
+revoke execute on function public.hts_make_steps(uuid), public.hts_team_steps(uuid) from public, anon, authenticated;
 
 -- A staff phone registers for notifications
 create or replace function public.hts_register_device(p_token text, p_platform text) returns void language plpgsql security definer set search_path = public as $$

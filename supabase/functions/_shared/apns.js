@@ -29,6 +29,7 @@ export async function sendApns({ fetch: f = fetch, token, deviceToken, topic, pr
 
 // What the phone says. Names are kept off the lock screen; staff open the app to see who.
 export function message(kind, churchName) {
-  if (kind === "submitted") return { title: churchName || "Here To Serve", body: "Someone just finished membership class. Tap to see their next steps." };
+  if (kind === "submitted") return { title: churchName || "Here To Serve", body: "Someone just finished class. Tap to see their next steps." };
+  if (kind === "handoff") return { title: churchName || "Here To Serve", body: "Someone new is headed to your team. Tap to reach out and set their first Sunday." };
   return { title: churchName || "Here To Serve", body: "A next step is overdue. Tap to see it." };
 }
