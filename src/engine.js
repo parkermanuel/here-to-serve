@@ -83,6 +83,7 @@ export function staffSteps(answers = {}, decision, recTeams = [], teams = [], ap
 export const canJoin = (answers = {}, requireBaptism = true) => !requireBaptism || answers.faith === "Yes";
 export const joinsAfterBaptism = (answers = {}, requireBaptism = true) => requireBaptism && answers.faith === "Yes" && answers.bapt !== "Yes";
 export const AFTER_BAPTISM_FAITH = "I have trusted Jesus, and I want to be baptized as a believer.";
+export const AFTER_BAPTISM_NOTE = "Your membership becomes official after you're baptized."; // owner, 23 Oct 2026: say it plainly
 
 // ---------- Church settings editing (owner, 23 Oct 2026: teams and commitments are each church's own; questions and gifts stay fixed) ----------
 const clip = (s, n) => String(s ?? "").trim().slice(0, n);

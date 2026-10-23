@@ -1,7 +1,7 @@
 // Screens: the member phone flow (#/j/<code>, #/m/<key>, #/demo) and the staff dashboard (#/ and #/s/...).
 import qrcode from "qrcode-generator";
 import { GIFTS, GIFT_KEYS, VERSES, PAIRS, CHOICES, PINEWOOD_BELIEFS, ROLE_NAMES, DEFAULT_TEAMS, DEFAULT_JOIN_TERM, DEFAULT_HOST_SCRIPT, DEFAULT_GUIDE, lines } from "./bank.js";
-import { results, countGifts, cleanTeams, parseCommitments, canJoin, joinsAfterBaptism, AFTER_BAPTISM_FAITH, memberSteps } from "./engine.js";
+import { results, countGifts, cleanTeams, parseCommitments, canJoin, joinsAfterBaptism, AFTER_BAPTISM_FAITH, AFTER_BAPTISM_NOTE, memberSteps } from "./engine.js";
 import * as L from "./live.js";
 import * as N from "./native.js";
 import { privacyPage, termsPage } from "./pages.js";
@@ -168,7 +168,7 @@ function screen() {
   if (s === "commit") {
     const list = c.commitments || [];
     return `<div class="pbody" style="gap:14px"><h1>Our commitment</h1><p class="sub">This is a promise we make to each other. Check each one you're ready to make.</p>
-      ${list.map((x) => { const on = M.commits.includes(x.k); return `<div class="commit"><button type="button" class="crow" aria-pressed="${on}" data-act="commit" data-v="${esc(x.k)}"><span class="box">${ICON.check()}</span><span><span class="cw">${esc(x.word)}</span><span class="cs">${esc(x.k === "faith" && joinsAfterBaptism(M.a, c.requireBaptism !== false) ? AFTER_BAPTISM_FAITH : x.statement)}</span><span class="cv">${esc(x.verse)}</span></span></button>${x.k === "belief" && (c.beliefs || []).length ? `<button type="button" class="textlink" data-act="sheet">Read what we believe</button>` : ""}</div>`; }).join("")}
+      ${list.map((x) => { const on = M.commits.includes(x.k); return `<div class="commit"><button type="button" class="crow" aria-pressed="${on}" data-act="commit" data-v="${esc(x.k)}"><span class="box">${ICON.check()}</span><span><span class="cw">${esc(x.word)}</span><span class="cs">${esc(x.k === "faith" && joinsAfterBaptism(M.a, c.requireBaptism !== false) ? AFTER_BAPTISM_FAITH : x.statement)}</span>${x.k === "faith" && joinsAfterBaptism(M.a, c.requireBaptism !== false) ? `<span class="cv"><b>${esc(AFTER_BAPTISM_NOTE)}</b></span>` : ""}<span class="cv">${esc(x.verse)}</span></span></button>${x.k === "belief" && (c.beliefs || []).length ? `<button type="button" class="textlink" data-act="sheet">Read what we believe</button>` : ""}</div>`; }).join("")}
       ${allCommitted() ? "" : `<p class="sub" style="font-size:14px">Check each one to submit. Not ready on one? That's okay. Go back and choose "I'm not ready yet."</p>`}</div>`;
   }
   if (s === "sent") return sentScreen();
@@ -194,7 +194,7 @@ function sentScreen() {
   const c = M.church, x = myCopy();
   const joining = x.decision === "joining";
   return `<div class="pbody"><div class="center"><div class="check" style="width:72px;height:72px;background:var(--accent);color:#fff;margin:0 auto">${ICON.check(34, 2.4)}</div><h1 style="font-size:32px">Submitted!</h1>
-    <p class="lead">${joining && joinsAfterBaptism(M.a, c.requireBaptism !== false) ? `Thank you for saying yes. Your next step is baptism, and a pastor will reach out soon to talk with you about it.` : joining ? `Thank you for saying yes. A pastor will confirm your next step after your one-on-one, and someone from our team will reach out soon.` : `Your answers are in. Someone from our team will reach out soon about your next steps.`}</p></div>
+    <p class="lead">${joining && joinsAfterBaptism(M.a, c.requireBaptism !== false) ? `Thank you for saying yes. ${esc(AFTER_BAPTISM_NOTE)} Your next step is baptism, and a pastor will reach out soon to talk with you about it.` : joining ? `Thank you for saying yes. A pastor will confirm your next step after your one-on-one, and someone from our team will reach out soon.` : `Your answers are in. Someone from our team will reach out soon about your next steps.`}</p></div>
     <div class="card q"><div class="kick">Your top gifts</div><p style="margin:0"><b>${esc(x.gifts.join(" · "))}</b></p>
       <div class="kick">Teams to talk about</div><p style="margin:0">${esc(x.teams.join(" · "))}</p>
       ${x.commits.length ? `<div class="kick">Commitments you made</div><p style="margin:0">${esc(x.commits.map((k) => k.word).join(" · "))}</p>` : ""}
