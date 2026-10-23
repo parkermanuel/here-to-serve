@@ -553,6 +553,7 @@ function viewAccount() {
     <section class="panel"><h2>${esc(email)}</h2>${L.active() ? `<p class="hint">${esc(ROLE_NAMES[L.myRole()] || "")} at ${esc(L.active().name)}${L.prayerOk() ? " · prayer access" : ""}</p>` : ""}
       ${N.PLATFORM === "ios" ? `<button class="btn ghost" style="align-self:flex-start" data-act="push">Turn on notifications</button><p class="hint">Get a notification when someone finishes class or a next step is overdue.</p>` : ""}
       <div class="row"><button class="btn quiet" data-act="signout">Sign out</button><a href="#/privacy">Privacy</a><a href="#/terms">Terms</a></div></section>
+    <section class="panel"><h2>Give feedback</h2><p class="hint">Here To Serve is in beta. Tell Parker what confused you, what almost made you quit, and what would make it worth paying for.</p><a class="btn ghost" style="align-self:flex-start" href="https://parkermanuel.com/beta-feedback?product=here-to-serve" target="_blank" rel="noopener">Give feedback</a></section>
     <section class="panel"><h2>Delete my account</h2><p class="hint">This removes your sign-in and your access to every church you're on. It can't be undone. If you're the only Administrator of a church that has other people on its team, make someone else an Administrator first. If you're the only person on a church's team, that church and everything in it is deleted too.</p>
       <button class="btn" style="align-self:flex-start;background:var(--warm-ink)" data-act="delete-account">Delete my account</button></section>`;
 }
