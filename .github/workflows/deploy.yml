@@ -1,14 +1,13 @@
-name: Deploy Here To Serve
-# On every push to main: run the checks, update the database and server functions (once their secrets are set),
-# then publish the website. The phone app is built separately (ios.yml).
+name: Deploy Here To Serve (retired)
+# RETIRED 24 Oct 2026. The live app is the Lovable project (parkermanuel/here-to-serve-f9f025a9), and database
+# updates now go live from that repo's database.yml. This copy no longer publishes a website, and this workflow
+# is turned off in GitHub so two repos never update the database.
 on:
   push:
     branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
-  pages: write
-  id-token: write
 concurrency:
   group: deploy
   cancel-in-progress: false
@@ -72,21 +71,3 @@ jobs:
           [ -n "$APNS_KEY_P8" ] && set -- "$@" APNS_KEY_P8="$APNS_KEY_P8"
           supabase secrets set --project-ref "$SUPABASE_PROJECT_REF" "$@"
 
-  site:
-    needs: test
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci
-      - run: node build.mjs
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
-      - id: deployment
-        uses: actions/deploy-pages@v4

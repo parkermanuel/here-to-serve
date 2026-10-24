@@ -36,7 +36,7 @@ create or replace function public.hts_default_settings() returns jsonb language 
       {"name":"Kids","gifts":["sh","te","he"],"boosts":["Kids"],"check":true},
       {"name":"Youth","gifts":["sh","te","en"],"boosts":["Students"],"check":true},
       {"name":"AVL","gifts":["he","ad"],"boosts":["Tech or AV","Design or social media"],"check":false},
-      {"name":"Set up / tear down","gifts":["he","ad","le"],"boosts":["Trades or building"],"check":false},
+      {"name":"Set up and tear down","gifts":["he","ad","le"],"boosts":["Trades or building"],"check":false},
       {"name":"Security","gifts":["he","le"],"boosts":["Military or law enforcement","Medical"],"check":true}
     ]'::jsonb,
     'commitments', '[
@@ -1131,6 +1131,46 @@ begin
   end loop;
   delete from auth.users where id = me;  -- removes their staff rows, invites they sent, devices and class assignments too
   return jsonb_build_object('deleted', true, 'churchesDeleted', gone);
+end $$;
+
+-- ============ One-time data updates ============
+-- Each runs once (its key is saved here), so running this file again never repeats it.
+create table if not exists public.hts_data_updates (key text primary key, applied_at timestamptz not null default now());
+alter table public.hts_data_updates enable row level security;
+revoke all on public.hts_data_updates from public, anon, authenticated;
+
+-- 24 Oct 2026 (owner): the default team "Set up / tear down" is now "Set up and tear down".
+-- Only churches whose team is still named exactly "Set up / tear down" change; a church that renamed it keeps its name.
+-- Everything that points at the team by name in those churches follows, so nobody falls off a team. Ids stay the same.
+do $$
+declare
+  k constant text := '2026-10-24 rename Set up / tear down';
+  o constant text := 'Set up / tear down';
+  n constant text := 'Set up and tear down';
+  cids uuid[];
+begin
+  if exists (select 1 from public.hts_data_updates where key = k) then return; end if;
+  with hit as (
+    update public.churches c
+      set settings = jsonb_set(c.settings, '{teams}',
+        (select jsonb_agg(case when t->>'name' = o then jsonb_set(t, '{name}', to_jsonb(n)) else t end order by i)
+           from jsonb_array_elements(c.settings->'teams') with ordinality x(t, i)))
+      where jsonb_typeof(c.settings->'teams') = 'array'
+        and exists (select 1 from jsonb_array_elements(c.settings->'teams') t where t->>'name' = o)
+        and not exists (select 1 from jsonb_array_elements(c.settings->'teams') t where t->>'name' = n)
+      returning c.id)
+  select coalesce(array_agg(id), '{}') into cids from hit;
+  update public.members set team = n where church_id = any(cids) and team = o;
+  update public.members set rec_teams = array_replace(rec_teams, o, n) where church_id = any(cids) and o = any(rec_teams);
+  update public.staff set teams = array_replace(teams, o, n) where church_id = any(cids) and o = any(teams);
+  update public.staff_invites set teams = array_replace(teams, o, n) where church_id = any(cids) and o = any(teams);
+  update public.team_map set hts_team = n where church_id = any(cids) and hts_team = o;
+  update public.next_steps
+    set title = replace(title, 'the ' || o || ' team lead', 'the ' || n || ' team lead'),
+        owner_label = case when owner_label = o || ' lead' then n || ' lead' else owner_label end
+    where church_id = any(cids) and kind = 'team' and done_at is null
+      and (title like '%the ' || o || ' team lead%' or owner_label = o || ' lead');
+  insert into public.hts_data_updates(key) values (k);
 end $$;
 
 -- Live updates for the staff dashboard

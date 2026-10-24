@@ -61,5 +61,5 @@ if (cfg.appleTeamId) {
   mkdirSync("dist/.well-known", { recursive: true });
   writeFileSync("dist/.well-known/apple-app-site-association", JSON.stringify({ applinks: { details: [{ appIDs: [`${cfg.appleTeamId}.app.heretoserve`], components: [{ "/": "/*" }] }] } }));
 }
-if (cfg.domain) writeFileSync("dist/CNAME", cfg.domain + "\n");
+// Retired 24 Oct 2026: no CNAME, so this copy never claims heretoserve.app (the live app is the Lovable project).
 console.log(`built dist/index.html ${(html.length / 1024).toFixed(0)}KB, live=${!!(cfg.supabaseUrl && cfg.supabaseAnonKey)}`);

@@ -284,4 +284,35 @@ await as(ADMIN, () => q(`delete from public.members where id=$1`, [m2.id]));
 ok((await q(`select count(*)::int n from public.next_steps where member_id=$1`, [m2.id]))[0].n === 0, "an Administrator deletes a person's data on request, steps go too");
 ok(!!(await tryAs(STAFF, `delete from public.members where id=$1`, [m.id])) || (await q(`select count(*)::int n from public.members where id=$1`, [m.id]))[0].n === 1, "only Administrators delete people");
 
+// One-time rename (24 Oct 2026): "Set up / tear down" becomes "Set up and tear down" only where it still has the old name
+{
+  const O = "Set up / tear down", N = "Set up and tear down";
+  ok(def.teams.some((t) => t.name === N) && !def.teams.some((t) => t.name === O), "new churches get the Set up and tear down team");
+  const oldTeams = JSON.stringify(DEFAULT_TEAMS.map((t) => (t.name === N ? { ...t, name: O } : t)));
+  const kept = JSON.stringify([{ name: "Setup crew", gifts: ["he"], boosts: [], check: false }]);
+  const [a] = await q(`insert into public.churches(name, settings) values ('Old name', jsonb_set(public.hts_default_settings(), '{teams}', $1::jsonb)) returning id`, [oldTeams]);
+  const [b] = await q(`insert into public.churches(name, settings) values ('Renamed', jsonb_set(public.hts_default_settings(), '{teams}', $1::jsonb)) returning id`, [kept]);
+  const [mem] = await q(`insert into public.members(church_id, name, team, rec_teams) values ($1, 'Pat', $2, array[$2, 'Kids']) returning id`, [a.id, O]);
+  await q(`insert into public.staff(church_id, user_id, role, teams) values ($1, $2, 'team_lead', array[$3])`, [a.id, ADMIN2, O]);
+  await q(`insert into public.team_map(church_id, source, ext_team_id, hts_team) values ($1, 'csv', 'setup', $2)`, [a.id, O]);
+  await q(`insert into public.next_steps(church_id, member_id, kind, title, owner_label) values ($1, $2, 'team', $3, $4)`, [a.id, mem.id, "Introduce to the " + O + " team lead", O + " lead"]);
+  const before = (await q(`select settings from public.churches where id=$1`, [a.id]))[0].settings.teams.map((t) => t.name);
+  await q(`delete from public.hts_data_updates where key like '2026-10-24 rename%'`);
+  const sqlText = readFileSync(new URL("../supabase/setup.sql", import.meta.url), "utf8");
+  await db.exec(sqlText);
+  const after = (await q(`select settings from public.churches where id=$1`, [a.id]))[0].settings.teams.map((t) => t.name);
+  ok(after.join("|") === before.map((x) => (x === O ? N : x)).join("|"), "the rename changes only that team's name and keeps the order");
+  ok((await q(`select settings from public.churches where id=$1`, [b.id]))[0].settings.teams[0].name === "Setup crew", "a church that renamed the team keeps its own name");
+  const m2 = (await q(`select team, rec_teams from public.members where id=$1`, [mem.id]))[0];
+  ok(m2.team === N && m2.rec_teams[0] === N && m2.rec_teams[1] === "Kids", "people on the team move with the new name");
+  ok((await q(`select teams from public.staff where church_id=$1 and user_id=$2`, [a.id, ADMIN2]))[0].teams[0] === N, "the team lead still leads it");
+  ok((await q(`select hts_team from public.team_map where church_id=$1`, [a.id]))[0].hts_team === N, "team matches follow the new name");
+  const st = (await q(`select title, owner_label from public.next_steps where member_id=$1`, [mem.id]))[0];
+  ok(st.title === "Introduce to the " + N + " team lead" && st.owner_label === N + " lead", "open next steps use the new name");
+  await q(`update public.churches set settings = jsonb_set(settings, '{teams}', $2::jsonb) where id=$1`, [b.id, oldTeams]);
+  await db.exec(sqlText);
+  ok((await q(`select settings from public.churches where id=$1`, [b.id]))[0].settings.teams.some((t) => t.name === O), "the rename runs only once, so a church that later picks the old name keeps it");
+  await q(`delete from public.churches where id = any($1)`, [[a.id, b.id]]);
+}
+
 process.exit(failed ? 1 : 0);
