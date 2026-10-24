@@ -59,7 +59,7 @@ export const DEFAULT_TEAMS = [
   { name: "Kids", gifts: ["sh", "te", "he"], boosts: ["Kids"], check: true },
   { name: "Youth", gifts: ["sh", "te", "en"], boosts: ["Students"], check: true },
   { name: "AVL", gifts: ["he", "ad"], boosts: ["Tech or AV", "Design or social media"], check: false },
-  { name: "Set up / tear down", gifts: ["he", "ad", "le"], boosts: ["Trades or building"], check: false },
+  { name: "Set up and tear down", gifts: ["he", "ad", "le"], boosts: ["Trades or building"], check: false },
   { name: "Security", gifts: ["he", "le"], boosts: ["Military or law enforcement", "Medical"], check: true },
 ];
 

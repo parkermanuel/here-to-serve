@@ -1,3 +1,5 @@
+> **Retired Oct 24, 2026 — the live app is the Lovable project ([here-to-serve-f9f025a9](https://github.com/parkermanuel/here-to-serve-f9f025a9)).** Make changes there. This repo no longer publishes heretoserve.app or updates the database. Its "Every 15 minutes" job still runs the people-system sync and staff notifications.
+
 # Here To Serve
 
 Growth Track (membership) class, gifts and next steps for churches. Each church uses its own words for joining ("join the serve team", "become a covenant member"). People scan a QR code in class and fill it out on their phones. Staff get a dashboard: who finished, their top gifts and recommended teams, a next steps checklist, prayer requests and a church snapshot. White labeled: each church sees its own name, logo and color.
