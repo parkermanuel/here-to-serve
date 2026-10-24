@@ -31,6 +31,16 @@ const html = `<!doctype html>
 <title>Here To Serve</title>
 <meta name="description" content="Membership class, gifts and next steps for your church.">
 <meta name="theme-color" content="#F6F4EE">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Here To Serve">
+<meta property="og:title" content="Here To Serve">
+<meta property="og:description" content="Membership class, spiritual gifts and next steps for your church, all from a phone.">
+<meta property="og:url" content="https://heretoserve.app/">
+<meta property="og:image" content="https://heretoserve.app/share.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://heretoserve.app/share.png">
 <link rel="icon" href="icon.png" type="image/png"><link rel="apple-touch-icon" href="icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap">
