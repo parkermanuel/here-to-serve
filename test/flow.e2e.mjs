@@ -8,7 +8,7 @@ const { chromium } = await import(process.env.PW_PATH || "playwright");
 const root = new URL("../dist/", import.meta.url).pathname;
 const srv = createServer((req, res) => {
   const p = join(root, decodeURIComponent(req.url.split("?")[0]).replace(/^\/$/, "/index.html"));
-  if (!existsSync(p)) { res.writeHead(404); return res.end(); }
+  if (!existsSync(p)) { const nf = join(root, "404.html"); if (existsSync(nf)) { res.writeHead(404, { "Content-Type": "text/html" }); return res.end(readFileSync(nf)); } res.writeHead(404); return res.end(); }
   res.writeHead(200, { "Content-Type": p.endsWith(".html") ? "text/html" : p.endsWith(".png") ? "image/png" : "application/octet-stream" }); res.end(readFileSync(p));
 }).listen(0);
 const base = `http://localhost:${srv.address().port}`;
@@ -77,6 +77,8 @@ ok(await page.isVisible("h1:text('Privacy')"), "privacy page");
 await page.goto(base + "/#/terms"); await page.waitForSelector("h1:text('Terms')");
 ok(true, "terms page");
 await page.goto(base + "/#/"); await page.waitForSelector("text=Staff sign in");
+await page.goto(base + "/join"); await page.waitForSelector("text=Join your class");
+ok(await page.isVisible("#tc-code"), "typing heretoserve.app/join opens the class code screen");
 ok(true, "staff sign-in page");
 ok(errors.length === 0, "no script errors" + (errors.length ? ": " + errors.join(" | ") : ""));
 await browser.close(); srv.close();

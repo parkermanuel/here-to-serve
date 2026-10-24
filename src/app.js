@@ -895,7 +895,7 @@ N.onAppLink(async (url) => {
 });
 (async () => {
   route = parse();
-  if (route.name === "join" || route.name === "member") return onRoute();
+  if (route.name === "join" || route.name === "member" || route.name === "typecode") return onRoute();
   render();
   await L.initAuth();
   render();
